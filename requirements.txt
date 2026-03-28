@@ -1,5 +1,30 @@
+# Core Dependencies
 streamlit
 pandas
 plotly
 python-dotenv
+numpy
+
+# Anthropic Claude API
+anthropic
+
+# Google AI - Legacy (dashboard.py still references)
 google-generativeai
+pydantic
+
+# Web Scraping
+requests
+
+# Database
+sqlalchemy
+
+# If using Supabase
+supabase
+
+# Optional but recommended
+openpyxl  # For Excel export
+psycopg2-binary  # PostgreSQL driver for SQLAlchemy
+
+# FastAPI / Railway deployment
+fastapi
+uvicorn[standard]
