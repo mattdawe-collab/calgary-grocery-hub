@@ -333,20 +333,27 @@ class DataStore:
                     "store": str(h.get("Store", "")),
                 })
 
-        # Cross-store prices (this week)
+        # Cross-store prices (this week) — deduplicate by store, keep lowest
         cross_store = []
         if pd.notna(norm_name) and str(norm_name).strip():
             same = self.current[self.current["ai_normalized_name"] == norm_name]
-            same = same.sort_values("Price_Value")
-            for rank, (_, s) in enumerate(same.iterrows(), 1):
+            # Group by store, take lowest price per store
+            store_best = same.groupby("Store")["Price_Value"].min().reset_index()
+            store_best = store_best.sort_values("Price_Value")
+            for rank, (_, s) in enumerate(store_best.iterrows(), 1):
                 cross_store.append({
                     "store": str(s["Store"]),
                     "price": float(s["Price_Value"]),
                     "rank": rank,
                 })
 
-        # Stats
+        # Stats — include current price in min calculation
         hist_min = deal.get("historical_min")
+        current_price = deal.get("price")
+        if hist_min is not None and current_price is not None:
+            hist_min = min(hist_min, current_price)
+        elif current_price is not None:
+            hist_min = current_price
         hist_avg = deal.get("historical_avg")
         hist_count = deal.get("historical_count", 0)
 

@@ -10,7 +10,6 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -37,12 +36,11 @@ ENV/
 *.swo
 *~
 
-# Data Files (if sensitive)
-*.csv
-!seton_grocery_history.csv  # Keep the history file in git if you want
-!current_flyers.csv         # Needed for Railway deployment
-!historical_archive.csv     # Needed for Railway deployment
+# Data Files — exclude specific CSVs, not all
 clean_grocery_data.csv
+seton_grocery_history.csv
+seton_grocery_history_BACKUP.csv
+1810024501-eng.csv
 
 # Streamlit
 .streamlit/

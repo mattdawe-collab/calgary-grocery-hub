@@ -1,0 +1,32 @@
+# Railway / Docker build context — Nixpacks reads this instead of .gitignore
+__pycache__/
+*.py[cod]
+.env
+*.env
+.streamlit/
+.vscode/
+.idea/
+venv/
+.venv/
+Flyers/
+*.log
+*.bak
+*_BACKUP.*
+.git/
+.claude/
+node_modules/
+archive/
+*.zip
+*.pdf
+*.bat
+weekly_report_*.txt
+clean_grocery_data.csv
+seton_grocery_history.csv
+seton_grocery_history_BACKUP.csv
+1810024501-eng.csv
+
+# Explicitly NOT excluded:
+# - current_flyers.csv
+# - historical_archive.csv
+# - api/
+# - dashboard/dist/
