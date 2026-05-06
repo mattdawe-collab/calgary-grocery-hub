@@ -56,6 +56,29 @@ desktop.ini
 # Backup files
 *_BACKUP.*
 *.bak
+historical_archive_backup.csv
+historical_archive_backup_*.csv
 
 # Flyer archives (can be large)
 Flyers/
+
+# v3.2 spring cleaning additions
+
+# Generated weekly reports (regenerated each Wednesday run)
+weekly_report_*.txt
+
+# Atomic-write tempfiles from save_to_archive / clean_archive_per_100g
+._archive_*
+
+# Large historical CSV snapshots (~21 MB, kept locally for reference only)
+archive/old_csvs/
+
+# Claude Code agent session state
+.claude/
+
+# Misc one-offs / loose binary blobs
+files.zip
+March*.pdf
+
+# Build artifacts in dashboard React source
+dashboard/node_modules/
