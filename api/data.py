@@ -1,5 +1,5 @@
 """
-Calgary Grocery Hub — Data Layer
+Calgary Grocery Hub - Data Layer
 Loads CSVs, caches in memory, pre-computes insights.
 """
 

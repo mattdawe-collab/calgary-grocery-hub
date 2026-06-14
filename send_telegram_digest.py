@@ -114,7 +114,7 @@ def _deal_label(row: pd.Series) -> str:
     except (TypeError, ValueError):
         pass
 
-    return f"• {price}{unit} - {item} @ {store} | score {score_text}{savings}"
+    return f"* {price}{unit} - {item} @ {store} | score {score_text}{savings}"
 
 
 def _filter_deals(df: pd.DataFrame, min_score: float, store: str | None, category: str | None) -> pd.DataFrame:
