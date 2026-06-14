@@ -4,6 +4,11 @@
 
 Calgary grocery deal update:
 
+Quick note if you are new to Telegram: it is a free messaging app, and I am using it like a simple broadcast channel for weekly grocery deal alerts. You can join the channel, read the deal posts, and tap any deal name to see the price-history snapshot. No group chat noise required.
+
+Telegram channel:
+https://t.me/CalgaryGroceryDeals
+
 I am changing how the weekly deal alerts are posted so they are easier to scan and more useful while you are actually planning a shop.
 
 Instead of one long mixed list, the Telegram channel will now send 3 focused messages:
@@ -29,14 +34,13 @@ The goal is not just to find cheap items. The goal is to make the list practical
 
 This should make the weekly updates easier to skim, easier to trust, and easier to turn into an actual grocery plan.
 
-Telegram channel:
-https://t.me/CalgaryGroceryDeals
-
 Feedback welcome. If a category feels too broad, too narrow, or missing something useful, I can keep tuning it.
 
 ## Short Version
 
 I am updating the Calgary grocery deal alerts so they are easier to use.
+
+If you are new to Telegram, it is a free messaging app. I am using it as a simple broadcast channel for weekly grocery deal alerts, with clickable deal links that open price-history snapshots.
 
 Instead of one long mixed list, Telegram will now send 3 focused messages:
 
