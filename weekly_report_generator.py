@@ -37,6 +37,7 @@ from data_quality import (
     repair_category,
     sanitize_unit_prices,
 )
+from deal_guidance import add_deal_guidance
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -159,6 +160,7 @@ def load_data():
     curr['display_category'] = categories[0]
     curr['category_source'] = categories[1]
     curr = add_quality_metadata(curr)
+    curr = add_deal_guidance(curr)
     
     if os.path.exists(HISTORICAL_ARCHIVE):
         hist = pd.read_csv(HISTORICAL_ARCHIVE, low_memory=False)

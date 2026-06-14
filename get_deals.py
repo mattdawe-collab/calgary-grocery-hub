@@ -36,6 +36,7 @@ from data_quality import (
     filter_grocery_relevant,
     sanitize_unit_prices,
 )
+from deal_guidance import add_deal_guidance
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1182,6 +1183,7 @@ def scrape_deals():
     # --- Step 6.5: Unified Scoring (v3.0) ---
     df = compute_statistical_score(df)
     df = add_quality_metadata(df)
+    df = add_deal_guidance(df)
 
     score_col = 'deal_score'
     hot = (df[score_col] >= 85).sum()

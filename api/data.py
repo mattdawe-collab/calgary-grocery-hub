@@ -13,6 +13,7 @@ from data_quality import (
     repair_category,
     sanitize_unit_prices,
 )
+from deal_guidance import add_deal_guidance
 
 DATA_DIR = Path(__file__).parent.parent
 CURRENT_FILE = DATA_DIR / "current_flyers.csv"
@@ -98,6 +99,7 @@ class DataStore:
             "historical_min", "historical_max", "historical_avg",
             "historical_count", "price_percentile", "pct_below_avg",
             "cross_store_rank", "cross_store_count", "unit_price",
+            "confidence_score",
         ]
         for c in num_cols:
             if c in df.columns:
@@ -125,7 +127,7 @@ class DataStore:
         )
         df["display_category"] = categories[0]
         df["category_source"] = categories[1]
-        self.current = add_quality_metadata(df)
+        self.current = add_deal_guidance(add_quality_metadata(df))
 
     def _compute_insights(self) -> dict:
         df = self.current
@@ -140,6 +142,8 @@ class DataStore:
         original_other_count = int((df.get("ai_category", pd.Series(dtype=str)).astype(str) == "Other").sum())
         display_other_count = int((df.get("display_category", pd.Series(dtype=str)).astype(str) == "Other").sum())
         avg_quality = round(float(df.get("data_quality_score", pd.Series([100])).mean()), 1)
+        avg_confidence = round(float(df.get("confidence_score", pd.Series([0])).mean()), 1)
+        action_counts = df.get("action_label", pd.Series(dtype=str)).fillna("").astype(str).value_counts().to_dict()
         quality_flag_counts: dict[str, int] = {}
         if "quality_flags" in df.columns:
             for flags in df["quality_flags"].fillna("").astype(str):
@@ -210,6 +214,8 @@ class DataStore:
             "display_other_count": display_other_count,
             "display_other_rate": round(display_other_count / len(df) * 100, 1),
             "avg_data_quality_score": avg_quality,
+            "avg_confidence_score": avg_confidence,
+            "action_counts": action_counts,
             "quality_flag_counts": quality_flag_counts,
         }
 
@@ -263,8 +269,23 @@ class DataStore:
             "is_grocery_relevant": bool(safe("is_grocery_relevant", True)),
             "quality_flags": safe("quality_flags", ""),
             "data_quality_score": safe("data_quality_score", 100),
+            "confidence_score": safe("confidence_score", 0),
+            "action_label": safe("action_label", ""),
+            "why_bullets": self._split_why_bullets(safe("why_bullets", "")),
             "tags": tags,
         }
+
+    def _split_why_bullets(self, value) -> list[str]:
+        if isinstance(value, list):
+            return [str(v) for v in value if str(v).strip()]
+        if value is None:
+            return []
+        try:
+            if pd.isna(value):
+                return []
+        except (TypeError, ValueError):
+            pass
+        return [part.strip() for part in str(value).split(";") if part.strip()]
 
     def _compute_tags(self, row) -> list[str]:
         tags = []
@@ -289,6 +310,9 @@ class DataStore:
         quality_score = row.get("data_quality_score", 100)
         if pd.notna(quality_score) and quality_score < 80:
             tags.append("Data review")
+        action = row.get("action_label")
+        if action:
+            tags.append(str(action))
         return tags
 
     # --- Query methods ---
