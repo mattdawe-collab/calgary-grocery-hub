@@ -82,3 +82,6 @@ March*.pdf
 
 # Build artifacts in dashboard React source
 dashboard/node_modules/
+
+# Generated static deal snapshot site
+static_snapshots/

@@ -38,13 +38,7 @@ def _stat_card(label: str, value: str) -> str:
     """
 
 
-@router.get("/share/deals/{deal_id}", response_class=HTMLResponse)
-def deal_snapshot(deal_id: int, request: Request):
-    store.check_reload()
-    payload = store.get_deal_history(deal_id)
-    if payload is None:
-        raise HTTPException(status_code=404, detail="Deal not found")
-
+def render_deal_snapshot_html(payload: dict, dashboard_url: str = "/") -> str:
     deal = payload["deal"]
     stats = payload.get("stats", {})
     cross_store = payload.get("cross_store_prices", [])
@@ -79,9 +73,8 @@ def deal_snapshot(deal_id: int, request: Request):
     why_rows = "".join(f"<li>{escape(text)}</li>" for text in why[:4]) or "<li>No evidence bullets available.</li>"
     title = f"{item} - {price} at {store_name}"
     description = f"{action}. Score {score}, confidence {confidence}. {category}."
-    dashboard_url = str(request.base_url)
 
-    html = f"""<!doctype html>
+    return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -237,4 +230,12 @@ def deal_snapshot(deal_id: int, request: Request):
   </main>
 </body>
 </html>"""
-    return HTMLResponse(content=html)
+
+
+@router.get("/share/deals/{deal_id}", response_class=HTMLResponse)
+def deal_snapshot(deal_id: int, request: Request):
+    store.check_reload()
+    payload = store.get_deal_history(deal_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    return HTMLResponse(content=render_deal_snapshot_html(payload, str(request.base_url)))
