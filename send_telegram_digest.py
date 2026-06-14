@@ -109,7 +109,7 @@ def _why_list(row: pd.Series, limit: int = 2) -> list[str]:
     return bullets[:limit]
 
 
-def _deal_label(row: pd.Series) -> str:
+def _deal_label(row: pd.Series, rank: int | None = None) -> str:
     score = row.get("deal_score", row.get("ai_deal_score", 0))
     try:
         score_text = f"{float(score):.0f}"
@@ -122,10 +122,9 @@ def _deal_label(row: pd.Series) -> str:
     except (TypeError, ValueError):
         confidence_text = "?"
 
-    action = str(row.get("action_label", "") or "").strip()
-    item = _shorten(row.get("Item", ""), 58)
-    store = str(row.get("Store", "")).strip()
-    price = _money(row.get("Price_Value"))
+    item = html.escape(_shorten(row.get("Item", ""), 64))
+    store = html.escape(str(row.get("Store", "")).strip())
+    price = html.escape(_money(row.get("Price_Value")))
 
     unit = ""
     unit_price = row.get("unit_price")
@@ -133,14 +132,20 @@ def _deal_label(row: pd.Series) -> str:
     try:
         if pd.notna(unit_price) and unit_type:
             unit_name = str(unit_type).replace("$/", "/")
-            unit = f" ({_money(unit_price)}{unit_name})"
+            unit = html.escape(f" ({_money(unit_price)}{unit_name})")
     except (TypeError, ValueError):
         pass
 
-    why = _why_list(row)
-    evidence = f" - {'; '.join(why)}" if why else ""
-    action_prefix = f"{action}: " if action else ""
-    return f"* {action_prefix}{price}{unit} {item} @ {store} (S{score_text}/C{confidence_text}){evidence}"
+    prefix = f"{rank}. " if rank else "* "
+    lines = [
+        f"{prefix}<b>{item}</b>",
+        f"   {price}{unit} at {store} | score {score_text}, confidence {confidence_text}",
+    ]
+
+    why = [html.escape(part) for part in _why_list(row)]
+    if why:
+        lines.append(f"   {' | '.join(why)}")
+    return "\n".join(lines)
 
 
 def _prepare_current_deals() -> pd.DataFrame:
@@ -193,12 +198,12 @@ def _action_summary(df: pd.DataFrame) -> str:
     if df.empty or "action_label" not in df.columns:
         return "No matching deals."
     counts = df["action_label"].value_counts()
-    parts = []
-    for label in [ACTION_STOCK_UP, ACTION_BUY, ACTION_COMPARE]:
-        count = int(counts.get(label, 0))
-        if count:
-            parts.append(f"{label}: {count}")
-    return " | ".join(parts) if parts else "No high-priority actions."
+    stock_up = int(counts.get(ACTION_STOCK_UP, 0))
+    buy = int(counts.get(ACTION_BUY, 0))
+    compare = int(counts.get(ACTION_COMPARE, 0))
+    if not any([stock_up, buy, compare]):
+        return "Plan: no high-priority actions."
+    return f"Plan: {stock_up} stock-up | {buy} buy | {compare} compare"
 
 
 def _top_store_summary(df: pd.DataFrame) -> str:
@@ -215,8 +220,8 @@ def _top_store_summary(df: pd.DataFrame) -> str:
     )
     if grouped.empty:
         return ""
-    return "Best stops: " + "; ".join(
-        f"{store} ({int(row['count'])} picks, avg {row['avg_score']:.0f})"
+    return "Best stops: " + " | ".join(
+        f"{store}: {int(row['count'])} picks, avg {row['avg_score']:.0f}"
         for store, row in grouped.iterrows()
     )
 
@@ -228,8 +233,8 @@ def _append_section(lines: list[str], title: str, df: pd.DataFrame, limit: int) 
     lines.append(f"<b>{html.escape(title)}</b>")
     used = 0
     for _, row in df.head(limit).iterrows():
-        lines.append(html.escape(_deal_label(row)))
         used += 1
+        lines.append(_deal_label(row, used))
     return used
 
 
@@ -248,14 +253,14 @@ def build_digest(limit: int, min_score: float, store: str | None = None, categor
         title_bits.append(category)
 
     lines = [
-        f"<b>{html.escape(' - '.join(title_bits))}</b>",
-        f"{html.escape(valid_from)} to {html.escape(valid_until)}",
+        f"<b>{html.escape(' - '.join(title_bits)).title()}</b>",
+        f"{html.escape(valid_from)} - {html.escape(valid_until)}",
         "",
-        f"{len(df):,} grocery items | {len(filtered):,} score {min_score:.0f}+",
+        f"{len(filtered):,} strong picks from {len(df):,} grocery items",
         html.escape(_action_summary(filtered)),
     ]
     if long_until:
-        lines.append(f"Note: one long-running flyer continues to {html.escape(long_until)}.")
+        lines.append(f"Long-running flyer to {html.escape(long_until)}.")
 
     store_summary = _top_store_summary(filtered)
     if store_summary:
@@ -275,13 +280,16 @@ def build_digest(limit: int, min_score: float, store: str | None = None, categor
         compare = filtered[filtered["action_label"] == ACTION_COMPARE]
 
         remaining = max(1, limit)
-        used = _append_section(lines, ACTION_STOCK_UP, stock_up, min(5, remaining))
+        shown = 0
+        used = _append_section(lines, "Stock up now", stock_up, min(5, remaining))
+        shown += used
         remaining -= used
         used = _append_section(lines, ACTION_BUY, buy, min(4, remaining))
+        shown += used
         remaining -= used
-        _append_section(lines, ACTION_COMPARE, compare, min(3, remaining))
+        used = _append_section(lines, ACTION_COMPARE, compare, min(3, remaining))
+        shown += used
 
-        shown = sum(1 for line in lines if line.startswith("* "))
         if shown == 0:
             _append_section(lines, "Top deals", filtered, min(limit, len(filtered)))
 
