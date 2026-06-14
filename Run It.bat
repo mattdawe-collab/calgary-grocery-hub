@@ -1,11 +1,14 @@
 @echo off
 cd /d "%~dp0"
-echo 🧠 Grocery Brain Starting...
-python get_deals.py
-echo.
-echo 📊 Generating Weekly Reports...
+set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
-python weekly_report_generator.py
-echo.
-call push_to_github.bat
+set PYTHONUNBUFFERED=1
+
+echo Running Calgary Grocery Hub public publication chain...
+python tools\run_publication_chain.py
+if errorlevel 1 (
+    echo ERROR: publication chain failed.
+    pause
+    exit /b 1
+)
 pause

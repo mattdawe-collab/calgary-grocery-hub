@@ -1,12 +1,18 @@
 @echo off
-TITLE Calgary Grocery Hub - Claude Edition
-echo [1/3] Processing Flyer Extraction and AI Analysis...
-python get_deals.py
-echo [2/4] Generating Weekly Reports...
+title Calgary Grocery Hub - Weekly Run
+cd /d "%~dp0"
+set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
-python weekly_report_generator.py
-echo [3/4] Pushing to GitHub...
-call push_to_github.bat
-echo [4/4] Complete! Opening Current Flyer Report...
+set PYTHONUNBUFFERED=1
+
+echo Running Calgary Grocery Hub public publication chain...
+python tools\run_publication_chain.py
+if errorlevel 1 (
+    echo ERROR: publication chain failed.
+    pause
+    exit /b 1
+)
+
+echo Complete. Opening Current Flyer Report...
 start current_flyers.csv
 pause
