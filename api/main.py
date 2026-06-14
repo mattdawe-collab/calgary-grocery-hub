@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.data import store
-from api.routes import deals, insights, stores
+from api.routes import deals, insights, share, stores
 
 DIST_DIR = Path(__file__).parent.parent / "dashboard" / "dist"
 
@@ -45,13 +45,14 @@ app.add_middleware(
 
 @app.middleware("http")
 async def auto_reload_middleware(request: Request, call_next):
-    if request.url.path.startswith("/api/"):
+    if request.url.path.startswith("/api/") or request.url.path.startswith("/share/"):
         store.check_reload()
     return await call_next(request)
 
 app.include_router(deals.router, prefix="/api")
 app.include_router(insights.router, prefix="/api")
 app.include_router(stores.router, prefix="/api")
+app.include_router(share.router)
 
 # Serve React production build — mount as fallback SPA
 if DIST_DIR.exists():

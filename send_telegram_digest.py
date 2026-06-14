@@ -15,6 +15,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import quote
 
 import pandas as pd
 import requests
@@ -50,6 +51,23 @@ CATEGORY_GROUPS = {
 
 def _load_env() -> None:
     load_dotenv(ROOT / ".env", override=True)
+
+
+def _public_dashboard_url() -> str:
+    explicit = os.getenv("PUBLIC_DASHBOARD_URL") or os.getenv("DASHBOARD_PUBLIC_URL")
+    if explicit:
+        return explicit.rstrip("/")
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+    if railway_domain:
+        return f"https://{railway_domain.strip('/')}"
+    return ""
+
+
+def _deal_snapshot_url(deal_id) -> str:
+    base_url = _public_dashboard_url()
+    if not base_url or deal_id is None:
+        return ""
+    return f"{base_url}/share/deals/{quote(str(deal_id))}"
 
 
 def _money(value) -> str:
@@ -117,7 +135,7 @@ def _why_list(row: pd.Series, limit: int = 2) -> list[str]:
     return bullets[:limit]
 
 
-def _deal_label(row: pd.Series, rank: int | None = None) -> str:
+def _deal_label(row: pd.Series, rank: int | None = None, deal_id=None) -> str:
     score = row.get("deal_score", row.get("ai_deal_score", 0))
     try:
         score_text = f"{float(score):.0f}"
@@ -130,7 +148,9 @@ def _deal_label(row: pd.Series, rank: int | None = None) -> str:
     except (TypeError, ValueError):
         confidence_text = "?"
 
-    item = html.escape(_shorten(row.get("Item", ""), 64))
+    item_text = html.escape(_shorten(row.get("Item", ""), 64))
+    item_url = _deal_snapshot_url(deal_id)
+    item = f'<a href="{html.escape(item_url, quote=True)}">{item_text}</a>' if item_url else f"<b>{item_text}</b>"
     store = html.escape(str(row.get("Store", "")).strip())
     price = html.escape(_money(row.get("Price_Value")))
 
@@ -146,7 +166,7 @@ def _deal_label(row: pd.Series, rank: int | None = None) -> str:
 
     prefix = f"{rank}. " if rank else "* "
     lines = [
-        f"{prefix}<b>{item}</b>",
+        f"{prefix}{item}",
         f"   {price}{unit} at {store} | score {score_text}, confidence {confidence_text}",
     ]
 
@@ -259,7 +279,7 @@ def _append_section(lines: list[str], title: str, df: pd.DataFrame, limit: int) 
     used = 0
     for _, row in df.head(limit).iterrows():
         used += 1
-        lines.append(_deal_label(row, used))
+        lines.append(_deal_label(row, used, row.name))
     return used
 
 

@@ -91,6 +91,7 @@ TELEGRAM_MIN_SCORE=80
 TELEGRAM_DIGEST_LIMIT=12
 TELEGRAM_STORE_FILTER=
 TELEGRAM_CATEGORY_FILTER=
+PUBLIC_DASHBOARD_URL=https://your-public-dashboard-url
 ```
 
 Recommended defaults for public launch:
@@ -101,6 +102,8 @@ Recommended defaults for public launch:
 - leave store/category filters blank for the main public channel.
 - create separate channels later if you want store-specific or category-specific
   feeds.
+- set `PUBLIC_DASHBOARD_URL` when the FastAPI dashboard is public. Telegram item
+  names will link to `/share/deals/{id}` snapshot pages with price stats.
 
 ## Test Privately First
 
