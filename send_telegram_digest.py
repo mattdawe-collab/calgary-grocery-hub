@@ -39,6 +39,14 @@ CURRENT_FLYERS = ROOT / "current_flyers.csv"
 TELEGRAM_LIMIT = 4096
 SAFE_CHUNK_SIZE = 3600
 
+CATEGORY_GROUPS = {
+    "proteins": {
+        "title": "Calgary Protein Deals",
+        "label": "protein items",
+        "categories": ["Beef", "Pork", "Poultry", "Lamb", "Seafood"],
+    },
+}
+
 
 def _load_env() -> None:
     load_dotenv(ROOT / ".env", override=True)
@@ -168,17 +176,27 @@ def _prepare_current_deals() -> pd.DataFrame:
     return add_deal_guidance(add_quality_metadata(df))
 
 
-def _filter_deals(df: pd.DataFrame, min_score: float, store: str | None, category: str | None) -> pd.DataFrame:
+def _filter_deals(
+    df: pd.DataFrame,
+    min_score: float,
+    store: str | None,
+    category: str | None,
+    category_group: str | None = None,
+) -> pd.DataFrame:
     score_col = "deal_score" if "deal_score" in df.columns else "ai_deal_score"
     df = df.copy()
     df[score_col] = pd.to_numeric(df[score_col], errors="coerce").fillna(0)
-    df = df[df[score_col] >= min_score]
 
     if store:
         df = df[df["Store"].astype(str).str.casefold() == store.casefold()]
     category_col = "display_category" if "display_category" in df.columns else "ai_category"
+    if category_group:
+        group = CATEGORY_GROUPS.get(category_group)
+        if group and category_col in df.columns:
+            df = df[df[category_col].isin(group["categories"])]
     if category and category_col in df.columns:
         df = df[df[category_col].astype(str).str.casefold() == category.casefold()]
+    df = df[df[score_col] >= min_score]
 
     sort_cols = [score_col]
     ascending = [False]
@@ -226,6 +244,13 @@ def _top_store_summary(df: pd.DataFrame) -> str:
     )
 
 
+def _category_mix_summary(df: pd.DataFrame) -> str:
+    if df.empty or "display_category" not in df.columns:
+        return ""
+    counts = df["display_category"].value_counts().head(5)
+    return "Mix: " + " | ".join(f"{cat}: {int(count)}" for cat, count in counts.items())
+
+
 def _append_section(lines: list[str], title: str, df: pd.DataFrame, limit: int) -> int:
     if limit <= 0 or df.empty:
         return 0
@@ -238,15 +263,34 @@ def _append_section(lines: list[str], title: str, df: pd.DataFrame, limit: int) 
     return used
 
 
-def build_digest(limit: int, min_score: float, store: str | None = None, category: str | None = None) -> str:
+def build_digest(
+    limit: int,
+    min_score: float,
+    store: str | None = None,
+    category: str | None = None,
+    category_group: str | None = None,
+) -> str:
     df = _prepare_current_deals()
     if df.empty:
         return "Calgary Grocery Hub\n\nNo current flyer deals found."
 
-    filtered = _filter_deals(df, min_score=min_score, store=store, category=category)
+    group = CATEGORY_GROUPS.get(category_group or "")
+    context_df = df
+    context_label = "grocery items"
+    if group:
+        context_df = df[df["display_category"].isin(group["categories"])]
+        context_label = group["label"]
+
+    filtered = _filter_deals(
+        df,
+        min_score=min_score,
+        store=store,
+        category=category,
+        category_group=category_group,
+    )
     valid_from, valid_until, long_until = _flyer_window(df)
 
-    title_bits = ["Calgary grocery deals"]
+    title_bits = [group["title"] if group else "Calgary grocery deals"]
     if store:
         title_bits.append(store)
     if category:
@@ -256,7 +300,7 @@ def build_digest(limit: int, min_score: float, store: str | None = None, categor
         f"<b>{html.escape(' - '.join(title_bits)).title()}</b>",
         f"{html.escape(valid_from)} - {html.escape(valid_until)}",
         "",
-        f"{len(filtered):,} strong picks from {len(df):,} grocery items",
+        f"{len(filtered):,} strong picks from {len(context_df):,} {context_label}",
         html.escape(_action_summary(filtered)),
     ]
     if long_until:
@@ -265,6 +309,10 @@ def build_digest(limit: int, min_score: float, store: str | None = None, categor
     store_summary = _top_store_summary(filtered)
     if store_summary:
         lines.append(html.escape(store_summary))
+    if group:
+        mix_summary = _category_mix_summary(filtered)
+        if mix_summary:
+            lines.append(html.escape(mix_summary))
 
     if "ai_confidence" in df.columns:
         fallback = int((df["ai_confidence"].astype(str) == "statistical").sum())
@@ -280,15 +328,28 @@ def build_digest(limit: int, min_score: float, store: str | None = None, categor
         compare = filtered[filtered["action_label"] == ACTION_COMPARE]
 
         remaining = max(1, limit)
+        stock_limit = min(5, len(stock_up), remaining)
+        remaining -= stock_limit
+        buy_limit = min(4, len(buy), remaining)
+        remaining -= buy_limit
+        compare_limit = min(3, len(compare), remaining)
+        remaining -= compare_limit
+
+        if remaining > 0 and buy_limit < len(buy):
+            extra = min(remaining, len(buy) - buy_limit)
+            buy_limit += extra
+            remaining -= extra
+        if remaining > 0 and stock_limit < len(stock_up):
+            extra = min(remaining, len(stock_up) - stock_limit)
+            stock_limit += extra
+            remaining -= extra
+        if remaining > 0 and compare_limit < len(compare):
+            compare_limit += min(remaining, len(compare) - compare_limit)
+
         shown = 0
-        used = _append_section(lines, "Stock up now", stock_up, min(5, remaining))
-        shown += used
-        remaining -= used
-        used = _append_section(lines, ACTION_BUY, buy, min(4, remaining))
-        shown += used
-        remaining -= used
-        used = _append_section(lines, ACTION_COMPARE, compare, min(3, remaining))
-        shown += used
+        shown += _append_section(lines, "Stock up now", stock_up, stock_limit)
+        shown += _append_section(lines, ACTION_BUY, buy, buy_limit)
+        shown += _append_section(lines, ACTION_COMPARE, compare, compare_limit)
 
         if shown == 0:
             _append_section(lines, "Top deals", filtered, min(limit, len(filtered)))
@@ -369,6 +430,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-score", type=float, default=float(os.getenv("TELEGRAM_MIN_SCORE", "80")))
     parser.add_argument("--store", default=os.getenv("TELEGRAM_STORE_FILTER") or None)
     parser.add_argument("--category", default=os.getenv("TELEGRAM_CATEGORY_FILTER") or None)
+    parser.add_argument("--group", choices=sorted(CATEGORY_GROUPS), help="Send a focused category-group digest.")
     parser.add_argument("--silent", action="store_true", help="Send without a Telegram notification sound.")
     return parser.parse_args()
 
@@ -392,6 +454,7 @@ def main() -> int:
         min_score=args.min_score,
         store=args.store,
         category=args.category,
+        category_group=args.group,
     )
 
     if args.dry_run:

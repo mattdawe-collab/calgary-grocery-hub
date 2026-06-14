@@ -137,6 +137,12 @@ Manual public send:
 python send_telegram_digest.py
 ```
 
+Focused protein digest:
+
+```powershell
+python send_telegram_digest.py --group proteins
+```
+
 Quiet send without notification sound:
 
 ```powershell
