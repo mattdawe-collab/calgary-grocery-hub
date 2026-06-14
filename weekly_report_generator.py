@@ -25,13 +25,26 @@ Key Features:
 import pandas as pd
 import numpy as np
 import os
+import sys
 import json
 import re
 import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from data_quality import (
+    add_quality_metadata,
+    filter_grocery_relevant,
+    repair_category,
+    sanitize_unit_prices,
+)
 
-load_dotenv()
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
+load_dotenv(dotenv_path, override=True)
 
 # Gemini SDK (default)
 try:
@@ -60,8 +73,8 @@ except ImportError:
 # CONFIGURATION
 # =============================================================================
 
-GEMINI_MODEL = "gemini-2.0-flash"
-CLAUDE_MODEL = "claude-sonnet-4-6"
+GEMINI_MODEL = os.getenv("GEMINI_REPORT_MODEL", os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
+CLAUDE_MODEL = os.getenv("CLAUDE_REPORT_MODEL", os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"))
 HISTORICAL_ARCHIVE = 'historical_archive.csv'
 CURRENT_FLYERS = 'current_flyers.csv'
 
@@ -76,6 +89,7 @@ PREPARED_MEAT_KEYWORDS = [
     'nugget', 'finger', 'strip', 'tender', 'popcorn chicken', 'wing zing',
     'breaded', 'battered', 'frozen dinner', 'frozen entree', 'meal kit',
     'stuffed', 'marinated', 'seasoned', 'ready to eat', 'heat and serve',
+    'taco kit',
     'corn dog', 'hot dog', 'wiener', 'frankfurter', 'bologna', 'mortadella',
     'pate', 'liverwurst', 'head cheese'
 ]
@@ -131,6 +145,20 @@ CAT_EMOJI = {
 def load_data():
     """Load current flyers and historical archive, applying per-100g corrections."""
     curr = pd.read_csv(CURRENT_FLYERS, low_memory=False)
+    curr, excluded = filter_grocery_relevant(curr)
+    if len(excluded) > 0:
+        print(f"   🚫 Excluded {len(excluded)} non-grocery/general-merchandise rows from reports")
+    curr, unit_issue_count = sanitize_unit_prices(curr)
+    if unit_issue_count:
+        print(f"   ⚠️ Cleared {unit_issue_count} suspicious unit prices for reports")
+    categories = curr.apply(
+        lambda row: repair_category(row.get('Item', ''), row.get('ai_category', 'Other')),
+        axis=1,
+        result_type='expand',
+    )
+    curr['display_category'] = categories[0]
+    curr['category_source'] = categories[1]
+    curr = add_quality_metadata(curr)
     
     if os.path.exists(HISTORICAL_ARCHIVE):
         hist = pd.read_csv(HISTORICAL_ARCHIVE, low_memory=False)
@@ -349,7 +377,9 @@ def prepare_report_data(curr_df: pd.DataFrame, hist_df: pd.DataFrame) -> dict:
         score_col = 'deal_score'
         curr_df[score_col] = 50
     
-    cat_col = 'ai_category' if 'ai_category' in curr_df.columns else None
+    cat_col = 'display_category' if 'display_category' in curr_df.columns else (
+        'ai_category' if 'ai_category' in curr_df.columns else None
+    )
     
     report_data = {
         'week_ending': valid_until if valid_until else datetime.now().strftime('%Y-%m-%d'),

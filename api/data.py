@@ -7,6 +7,12 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from datetime import datetime, timedelta
+from data_quality import (
+    add_quality_metadata,
+    filter_grocery_relevant,
+    repair_category,
+    sanitize_unit_prices,
+)
 
 DATA_DIR = Path(__file__).parent.parent
 CURRENT_FILE = DATA_DIR / "current_flyers.csv"
@@ -28,6 +34,24 @@ def to_python(val):
     if isinstance(val, pd.Timestamp):
         return str(val)
     return val
+
+
+def modal_datetime(series: pd.Series) -> pd.Timestamp | None:
+    """Return a representative datetime by most-common calendar date."""
+    parsed = pd.to_datetime(series, errors="coerce")
+    parsed = parsed.dropna()
+    if parsed.empty:
+        return None
+    date_mode = parsed.dt.date.mode()
+    if date_mode.empty:
+        return parsed.max()
+    matching = parsed[parsed.dt.date == date_mode.iloc[0]]
+    return matching.max() if not matching.empty else parsed.max()
+
+
+def infer_category(item_name: str, current_category: str | None = None) -> tuple[str, str]:
+    """Return a dashboard-friendly category plus its source."""
+    return repair_category(item_name, current_category)
 
 
 class DataStore:
@@ -78,7 +102,7 @@ class DataStore:
         for c in num_cols:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
-        bool_cols = ["is_lowest_historical", "is_kvi"]
+        bool_cols = ["is_lowest_historical", "is_kvi", "is_grocery_relevant"]
         for c in bool_cols:
             if c in df.columns:
                 df[c] = df[c].fillna(False).astype(bool)
@@ -86,6 +110,22 @@ class DataStore:
             df["ai_category"] = df["ai_category"].fillna("Other")
         if "deal_score" in df.columns:
             df["deal_score"] = df["deal_score"].fillna(0)
+        if "Item" in df.columns:
+            df["Item"] = df["Item"].fillna("").astype(str).str.strip()
+        if "Store" in df.columns:
+            df["Store"] = df["Store"].fillna("").astype(str).str.strip()
+        if "ai_confidence" not in df.columns:
+            df["ai_confidence"] = ""
+        df, _ = filter_grocery_relevant(df)
+        df, _ = sanitize_unit_prices(df)
+        categories = df.apply(
+            lambda row: infer_category(row.get("Item", ""), row.get("ai_category", "Other")),
+            axis=1,
+            result_type="expand",
+        )
+        df["display_category"] = categories[0]
+        df["category_source"] = categories[1]
+        self.current = add_quality_metadata(df)
 
     def _compute_insights(self) -> dict:
         df = self.current
@@ -95,6 +135,16 @@ class DataStore:
         lowest_ever = int(df["is_lowest_historical"].sum()) if "is_lowest_historical" in df.columns else 0
         hot_count = int((df["deal_score"] >= 80).sum()) if "deal_score" in df.columns else 0
         kvi_count = int(df["is_kvi"].sum()) if "is_kvi" in df.columns else 0
+        ai_fallback_count = int((df.get("ai_confidence", pd.Series(dtype=str)).astype(str) == "statistical").sum())
+        inferred_category_count = int((df.get("category_source", pd.Series(dtype=str)).astype(str) == "inferred").sum())
+        original_other_count = int((df.get("ai_category", pd.Series(dtype=str)).astype(str) == "Other").sum())
+        display_other_count = int((df.get("display_category", pd.Series(dtype=str)).astype(str) == "Other").sum())
+        avg_quality = round(float(df.get("data_quality_score", pd.Series([100])).mean()), 1)
+        quality_flag_counts: dict[str, int] = {}
+        if "quality_flags" in df.columns:
+            for flags in df["quality_flags"].fillna("").astype(str):
+                for flag in [f.strip() for f in flags.split(";") if f.strip()]:
+                    quality_flag_counts[flag] = quality_flag_counts.get(flag, 0) + 1
 
         # Best store by avg deal_score
         best_store = {"name": "N/A", "avg_score": 0, "deal_count": 0}
@@ -117,8 +167,8 @@ class DataStore:
 
         # Category counts
         cat_counts = {}
-        if "ai_category" in df.columns:
-            cat_counts = df["ai_category"].value_counts().to_dict()
+        if "display_category" in df.columns:
+            cat_counts = df["display_category"].value_counts().to_dict()
 
         # Store counts
         store_counts = df["Store"].value_counts().to_dict()
@@ -126,12 +176,18 @@ class DataStore:
         # Date range
         valid_from = None
         valid_until = None
+        valid_until_max = None
+        extended_flyer_count = 0
         if "Valid_From" in df.columns:
             vf = pd.to_datetime(df["Valid_From"], errors="coerce")
             valid_from = str(vf.min()) if vf.notna().any() else None
         if "Valid_Until" in df.columns:
             vu = pd.to_datetime(df["Valid_Until"], errors="coerce")
-            valid_until = str(vu.max()) if vu.notna().any() else None
+            representative_until = modal_datetime(df["Valid_Until"])
+            valid_until = str(representative_until) if representative_until is not None else None
+            valid_until_max = str(vu.max()) if vu.notna().any() else None
+            if representative_until is not None:
+                extended_flyer_count = int((vu.dt.date > representative_until.date()).sum())
 
         return {
             "total_deals": len(df),
@@ -143,8 +199,18 @@ class DataStore:
             "top_5_deals": top5,
             "valid_from": valid_from,
             "valid_until": valid_until,
+            "valid_until_max": valid_until_max,
+            "extended_flyer_count": extended_flyer_count,
             "category_counts": cat_counts,
             "store_counts": store_counts,
+            "ai_fallback_count": ai_fallback_count,
+            "ai_fallback_rate": round(ai_fallback_count / len(df) * 100, 1),
+            "inferred_category_count": inferred_category_count,
+            "original_other_count": original_other_count,
+            "display_other_count": display_other_count,
+            "display_other_rate": round(display_other_count / len(df) * 100, 1),
+            "avg_data_quality_score": avg_quality,
+            "quality_flag_counts": quality_flag_counts,
         }
 
     def _deal_to_dict(self, row, idx: int) -> dict:
@@ -175,10 +241,15 @@ class DataStore:
             "ai_deal_score": safe("ai_deal_score", 0),
             "ai_deal_rating": safe("ai_deal_rating", ""),
             "ai_explanation": safe("ai_explanation", ""),
-            "category": safe("ai_category", "Other"),
+            "category": safe("display_category", safe("ai_category", "Other")),
+            "original_category": safe("ai_category", "Other"),
+            "category_source": safe("category_source", "ai"),
+            "ai_confidence": safe("ai_confidence", ""),
             "sub_category": safe("ai_sub_category", ""),
             "brand": safe("ai_brand"),
             "normalized_name": safe("ai_normalized_name", ""),
+            "valid_from": safe("Valid_From"),
+            "valid_until": safe("Valid_Until"),
             "is_lowest_historical": bool(safe("is_lowest_historical", False)),
             "pct_below_avg": safe("pct_below_avg", 0),
             "historical_min": safe("historical_min"),
@@ -189,6 +260,9 @@ class DataStore:
             "cross_store_rank": safe("cross_store_rank"),
             "cross_store_count": safe("cross_store_count", 0),
             "is_kvi": bool(safe("is_kvi", False)),
+            "is_grocery_relevant": bool(safe("is_grocery_relevant", True)),
+            "quality_flags": safe("quality_flags", ""),
+            "data_quality_score": safe("data_quality_score", 100),
             "tags": tags,
         }
 
@@ -208,6 +282,13 @@ class DataStore:
         score = row.get("deal_score", 0)
         if pd.notna(score) and score >= 80:
             tags.append("Hot Deal")
+        if row.get("category_source") == "inferred":
+            tags.append("Category inferred")
+        if row.get("category_source") == "corrected":
+            tags.append("Category corrected")
+        quality_score = row.get("data_quality_score", 100)
+        if pd.notna(quality_score) and quality_score < 80:
+            tags.append("Data review")
         return tags
 
     # --- Query methods ---
@@ -233,15 +314,17 @@ class DataStore:
         elif preset == "hot_deals":
             df = df[df["deal_score"] >= 80]
         elif preset == "best_protein":
-            df = df[df["ai_category"].isin(PROTEIN_CATEGORIES)]
+            df = df[df["display_category"].isin(PROTEIN_CATEGORIES)]
         elif preset == "under_5":
             df = df[df["Price_Value"] < 5.0]
         elif preset == "staples":
             df = df[df["is_kvi"] == True]
+        elif preset == "with_history":
+            df = df[df["historical_count"] >= 3]
 
         # Filters
         if category:
-            df = df[df["ai_category"] == category]
+            df = df[df["display_category"] == category]
         if store:
             df = df[df["Store"] == store]
         if search:
@@ -417,17 +500,18 @@ class DataStore:
 
     def get_categories(self) -> list[dict]:
         df = self.current
-        if df.empty or "ai_category" not in df.columns:
+        if df.empty or "display_category" not in df.columns:
             return []
 
         cats = []
-        for cat, group in df.groupby("ai_category"):
+        for cat, group in df.groupby("display_category"):
             cats.append({
                 "name": cat,
                 "count": len(group),
                 "avg_score": round(float(group["deal_score"].mean()), 1),
+                "hot_deals": int((group["deal_score"] >= 80).sum()),
             })
-        cats.sort(key=lambda c: c["count"], reverse=True)
+        cats.sort(key=lambda c: (c["name"] == "Other", -c["count"]))
         return cats
 
 

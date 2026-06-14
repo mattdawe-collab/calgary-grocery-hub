@@ -27,9 +27,20 @@ import numpy as np
 import datetime
 from datetime import timedelta
 import os
+import sys
 import time
 import re
 from dotenv import load_dotenv
+from data_quality import (
+    add_quality_metadata,
+    filter_grocery_relevant,
+    sanitize_unit_prices,
+)
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Optional: scipy for percentile calculations
 try:
@@ -594,14 +605,17 @@ def extract_unit_price(item_name, price, price_text=None, price_basis=None):
                 return round(price / (total_g / 1000), 2), '$/kg', total_g
 
     # Weight in kg
-    kg_match = re.search(r'(\d+(?:\.\d+)?)\s*kg\b', item_lower)
+    kg_match = re.search(r'\b(\d+(?:\.\d+)?)\s*kg\b', item_lower)
     if kg_match:
         kg = float(kg_match.group(1))
         if kg > 0:  # Prevent division by zero
             return round(price / kg, 2), '$/kg', kg * 1000
 
-    # Weight in grams
-    g_match = re.search(r'(\d+(?:\.\d+)?)\s*g\b', item_lower)
+    # Weight in grams. Allow compact 410g-style grocery weights, but not 5G.
+    g_match = (
+        re.search(r'\b(\d+(?:\.\d+)?)\s+g\b', item_lower)
+        or re.search(r'\b(\d{2,}(?:\.\d+)?)g\b', item_lower)
+    )
     if g_match:
         grams = float(g_match.group(1))
         if grams > 0:  # Prevent division by zero
@@ -631,7 +645,10 @@ def extract_unit_price(item_name, price, price_text=None, price_basis=None):
             return round(price / liters, 2), '$/L', liters * 1000
 
     # Volume in ml
-    ml_match = re.search(r'(\d+(?:\.\d+)?)\s*ml\b', item_lower)
+    ml_match = (
+        re.search(r'\b(\d+(?:\.\d+)?)\s+ml\b', item_lower)
+        or re.search(r'\b(\d{2,}(?:\.\d+)?)ml\b', item_lower)
+    )
     if ml_match:
         ml = float(ml_match.group(1))
         if ml > 0:  # Prevent division by zero
@@ -1097,8 +1114,17 @@ def scrape_deals():
         df = df[~alcohol_mask].reset_index(drop=True)
         print(f"   🚫 Filtered {len(excluded_items)} alcohol items")
 
+    df, non_grocery = filter_grocery_relevant(df)
+    if len(non_grocery) > 0:
+        print(f"   🚫 Filtered {len(non_grocery)} non-grocery/general-merchandise items")
+        for item in non_grocery['Item'].head(8):
+            print(f"      - {str(item)[:72]}")
+
     # --- Step 3.7: PER-100G CORRECTION (v3.1) ---
     df = apply_per_100g_corrections(df)
+    df, unit_issue_count = sanitize_unit_prices(df)
+    if unit_issue_count:
+        print(f"   ⚠️ Cleared {unit_issue_count} suspicious unit prices")
 
     print(f"   📊 Unique items: {len(df):,}")
 
@@ -1155,6 +1181,7 @@ def scrape_deals():
 
     # --- Step 6.5: Unified Scoring (v3.0) ---
     df = compute_statistical_score(df)
+    df = add_quality_metadata(df)
 
     score_col = 'deal_score'
     hot = (df[score_col] >= 85).sum()

@@ -18,12 +18,22 @@ Updates:
 import pandas as pd
 import numpy as np
 import os
+import sys
 import json
 import re
 import time
 import random
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
+from data_quality import repair_category
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
+load_dotenv(dotenv_path, override=True)
 
 # Optional progress bar
 try:
@@ -57,8 +67,8 @@ if not GEMINI_AVAILABLE and not CLAUDE_AVAILABLE:
     print("   ⚠️ No AI SDK installed - will use statistical scoring only")
 
 # --- CONFIGURATION ---
-GEMINI_MODEL = "gemini-2.0-flash"
-CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+CLAUDE_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 
 # Taxonomy matching dashboard.py
 TAXONOMY = {
@@ -212,6 +222,10 @@ def get_cross_store_context(item_name, df_current):
 
 def categorize_by_keywords(item_name):
     """Fallback categorization using keywords."""
+    repaired_category, _ = repair_category(item_name, None)
+    if repaired_category != "Other":
+        return repaired_category
+
     item_lower = item_name.lower()
 
     # Check sausage first (special handling)
@@ -391,6 +405,22 @@ def _parse_ai_response(text):
     return json.loads(text)
 
 
+def _is_non_retryable_api_error(error):
+    """Return True for permanent API failures that should not burn retries."""
+    text = f"{type(error).__name__}: {error}".lower()
+    permanent_markers = [
+        "404",
+        "not_found",
+        "not found",
+        "no longer available",
+        "invalid_argument",
+        "permission_denied",
+        "model",
+    ]
+    transient_markers = ["429", "rate", "503", "unavailable", "timeout", "deadline"]
+    return any(m in text for m in permanent_markers) and not any(m in text for m in transient_markers)
+
+
 def call_ai_api(batch_data, taxonomy_str, ai_client):
     """
     Call AI API (Gemini default, Claude fallback) with retry logic.
@@ -427,6 +457,9 @@ def call_ai_api(batch_data, taxonomy_str, ai_client):
 
         except Exception as e:
             err_name = type(e).__name__
+            if _is_non_retryable_api_error(e):
+                print(f"      ❌ API permanent error, not retrying: {e}")
+                return None
             if 'RateLimit' in err_name or '429' in str(e):
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
@@ -441,10 +474,6 @@ def call_ai_api(batch_data, taxonomy_str, ai_client):
             else:
                 print(f"      ❌ API Failed after {max_retries} attempts: {e}")
                 return None
-
-        except Exception as e:
-            print(f"      ❌ Unexpected error: {e}")
-            return None
 
 
 def add_ai_analysis_to_dataframe(df_current, df_history=None, batch_size=25):
