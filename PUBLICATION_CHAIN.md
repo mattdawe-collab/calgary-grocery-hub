@@ -24,6 +24,17 @@ The chain runs in this order:
 6. A live GitHub Pages card is verified for the `price-chart` marker.
 7. Telegram sends only after the public card check passes.
 
+By default, Telegram sends three public messages:
+
+1. Proteins, with whole raw base proteins first and prepared proteins last.
+2. Vegetables.
+3. Pantry and other grocery items.
+
+Each category has its own default item limit so it should fit in one Telegram
+message. Override with `TELEGRAM_PROTEINS_LIMIT`,
+`TELEGRAM_VEGETABLES_LIMIT`, or `TELEGRAM_PANTRY_OTHERS_LIMIT` only if you are
+comfortable with Telegram splitting a category into multiple messages.
+
 ## Environment
 
 Required in `.env`:
@@ -32,7 +43,7 @@ Required in `.env`:
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=@CalgaryGroceryDeals
 PUBLIC_DASHBOARD_URL=https://mattdawe-collab.github.io/calgary-grocery-hub
-PUBLICATION_TELEGRAM_GROUPS=proteins
+PUBLICATION_TELEGRAM_GROUPS=proteins,vegetables,pantry_others
 ```
 
 Optional:

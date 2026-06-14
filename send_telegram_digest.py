@@ -45,8 +45,120 @@ CATEGORY_GROUPS = {
         "title": "Calgary Protein Deals",
         "label": "protein items",
         "categories": ["Beef", "Pork", "Poultry", "Lamb", "Seafood"],
+        "default_limit": 12,
+    },
+    "vegetables": {
+        "title": "Calgary Vegetable Deals",
+        "label": "vegetable items",
+        "categories": ["Produce"],
+        "default_limit": 10,
+    },
+    "pantry_others": {
+        "title": "Calgary Pantry & Other Deals",
+        "label": "pantry and other grocery items",
+        "categories": [
+            "Pantry",
+            "Dairy & Eggs",
+            "Bakery",
+            "Frozen",
+            "Snacks",
+            "Beverages",
+            "Prepared Foods",
+            "Produce",
+            "Other",
+        ],
+        "default_limit": 9,
     },
 }
+
+VEGETABLE_KEYWORDS = (
+    "artichoke",
+    "asparagus",
+    "avocado",
+    "beet",
+    "broccoli",
+    "cabbage",
+    "carrot",
+    "cauliflower",
+    "celery",
+    "corn",
+    "cucumber",
+    "garlic",
+    "herb",
+    "kale",
+    "lettuce",
+    "mushroom",
+    "onion",
+    "pepper",
+    "potato",
+    "radish",
+    "salad",
+    "snap peas",
+    "snow peas",
+    "spinach",
+    "squash",
+    "tomato",
+    "yam",
+    "zucchini",
+)
+
+VEGETABLE_EXCLUDE_KEYWORDS = (
+    "dip",
+    "hummus",
+    "sunscreen",
+    "vinegar",
+)
+
+PREPARED_PROTEIN_KEYWORDS = (
+    "bacon bits",
+    "breaded",
+    "burger",
+    "cooked",
+    "corned beef",
+    "cutlet",
+    "cutlette",
+    "deli",
+    "ham",
+    "hot dog",
+    "kabob",
+    "kebab",
+    "marinated",
+    "mortadella",
+    "nugget",
+    "pastrami",
+    "plant-based",
+    "ring with sauce",
+    "roast beef",
+    "salami",
+    "sausage",
+    "skewer",
+    "smoked",
+    "stuffed",
+    "wiener",
+)
+
+NON_FOOD_OTHER_KEYWORDS = (
+    "attitude baby needs",
+    "baby needs",
+    "battery",
+    "chair",
+    "cetaphil",
+    "deodorant",
+    "detergent",
+    "dr. scholl",
+    "ice bricks",
+    "insole",
+    "johnson",
+    "laundry",
+    "live clean",
+    "nail polish",
+    "paper towel",
+    "shampoo",
+    "soccer ball",
+    "sunscreen",
+    "toothbrush",
+    "toothpaste",
+)
 
 
 def _load_env() -> None:
@@ -135,6 +247,73 @@ def _why_list(row: pd.Series, limit: int = 2) -> list[str]:
     return bullets[:limit]
 
 
+def _row_text(row: pd.Series) -> str:
+    return str(row.get("Item", "") or "").casefold()
+
+
+def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
+def _is_prepared_protein(row: pd.Series) -> bool:
+    return _contains_any(_row_text(row), PREPARED_PROTEIN_KEYWORDS)
+
+
+def _protein_priority(row: pd.Series) -> int:
+    text = _row_text(row)
+    category = str(row.get("display_category", row.get("ai_category", "")) or "")
+
+    if _is_prepared_protein(row):
+        return 90
+    if "chicken breast" in text and "stick" not in text:
+        return 0
+    if category == "Poultry" or "chicken" in text or "turkey" in text:
+        return 1
+    if any(term in text for term in ("ground", "roast", "ribs", "steak", "tenderloin", "loin", "shoulder")):
+        return 2
+    if category == "Seafood" or any(term in text for term in ("fillet", "salmon", "tilapia", "basa", "pollock", "shrimp", "oyster")):
+        return 3
+    return 4
+
+
+def _is_vegetable_row(row: pd.Series) -> bool:
+    category = str(row.get("display_category", row.get("ai_category", "")) or "")
+    text = _row_text(row)
+    return (
+        category == "Produce"
+        and _contains_any(text, VEGETABLE_KEYWORDS)
+        and not _contains_any(text, VEGETABLE_EXCLUDE_KEYWORDS)
+    )
+
+
+def _is_non_food_other(row: pd.Series) -> bool:
+    category = str(row.get("display_category", row.get("ai_category", "")) or "")
+    if category in {"Household & Personal", "Pet"}:
+        return True
+    return _contains_any(_row_text(row), NON_FOOD_OTHER_KEYWORDS)
+
+
+def _category_group_mask(df: pd.DataFrame, category_group: str, category_col: str) -> pd.Series:
+    group = CATEGORY_GROUPS.get(category_group)
+    if not group:
+        return pd.Series(True, index=df.index)
+
+    if category_group == "vegetables":
+        return df.apply(_is_vegetable_row, axis=1)
+
+    if category_group == "pantry_others":
+        protein_categories = set(CATEGORY_GROUPS["proteins"]["categories"])
+        allowed_categories = set(group["categories"])
+        return (
+            df[category_col].isin(allowed_categories)
+            & ~df[category_col].isin(protein_categories)
+            & ~df.apply(_is_vegetable_row, axis=1)
+            & ~df.apply(_is_non_food_other, axis=1)
+        )
+
+    return df[category_col].isin(group["categories"])
+
+
 def _deal_label(row: pd.Series, rank: int | None = None, deal_id=None) -> str:
     score = row.get("deal_score", row.get("ai_deal_score", 0))
     try:
@@ -211,15 +390,21 @@ def _filter_deals(
         df = df[df["Store"].astype(str).str.casefold() == store.casefold()]
     category_col = "display_category" if "display_category" in df.columns else "ai_category"
     if category_group:
-        group = CATEGORY_GROUPS.get(category_group)
-        if group and category_col in df.columns:
-            df = df[df[category_col].isin(group["categories"])]
+        if category_col in df.columns:
+            df = df[_category_group_mask(df, category_group, category_col)]
     if category and category_col in df.columns:
         df = df[df[category_col].astype(str).str.casefold() == category.casefold()]
     df = df[df[score_col] >= min_score]
 
-    sort_cols = [score_col]
-    ascending = [False]
+    sort_cols = []
+    ascending = []
+    if category_group == "proteins":
+        df["protein_priority"] = df.apply(_protein_priority, axis=1)
+        sort_cols.append("protein_priority")
+        ascending.append(True)
+
+    sort_cols.append(score_col)
+    ascending.append(False)
     if "pct_below_avg" in df.columns:
         df["pct_below_avg"] = pd.to_numeric(df["pct_below_avg"], errors="coerce").fillna(0)
         sort_cols.append("pct_below_avg")
@@ -283,6 +468,29 @@ def _append_section(lines: list[str], title: str, df: pd.DataFrame, limit: int) 
     return used
 
 
+def _append_protein_sections(lines: list[str], df: pd.DataFrame, limit: int) -> int:
+    if limit <= 0 or df.empty:
+        return 0
+
+    priority = df.apply(_protein_priority, axis=1)
+    raw = df[priority < 90]
+    prepared = df[priority >= 90]
+
+    prepared_limit = min(3, len(prepared), max(0, limit // 4))
+    raw_limit = limit - prepared_limit
+
+    raw_shown = _append_section(lines, "Whole raw proteins first", raw, raw_limit)
+    shown = raw_shown
+    remaining = limit - shown
+    prepared_shown = _append_section(lines, "Prepared proteins", prepared, min(len(prepared), remaining))
+    shown += prepared_shown
+
+    remaining = limit - shown
+    if remaining > 0 and raw_shown < len(raw):
+        shown += _append_section(lines, "More raw protein picks", raw.iloc[raw_shown:], remaining)
+    return shown
+
+
 def build_digest(
     limit: int,
     min_score: float,
@@ -298,7 +506,7 @@ def build_digest(
     context_df = df
     context_label = "grocery items"
     if group:
-        context_df = df[df["display_category"].isin(group["categories"])]
+        context_df = df[_category_group_mask(df, category_group or "", "display_category")]
         context_label = group["label"]
 
     filtered = _filter_deals(
@@ -310,14 +518,14 @@ def build_digest(
     )
     valid_from, valid_until, long_until = _flyer_window(df)
 
-    title_bits = [group["title"] if group else "Calgary grocery deals"]
+    title_bits = [group["title"] if group else "Calgary Grocery Deals"]
     if store:
         title_bits.append(store)
     if category:
         title_bits.append(category)
 
     lines = [
-        f"<b>{html.escape(' - '.join(title_bits)).title()}</b>",
+        f"<b>{html.escape(' - '.join(title_bits))}</b>",
         f"{html.escape(valid_from)} - {html.escape(valid_until)}",
         "",
         f"{len(filtered):,} strong picks from {len(context_df):,} {context_label}",
@@ -331,7 +539,7 @@ def build_digest(
         lines.append(html.escape(store_summary))
     if group:
         mix_summary = _category_mix_summary(filtered)
-        if mix_summary:
+        if mix_summary and len(filtered.get("display_category", pd.Series(dtype=str)).dropna().unique()) > 1:
             lines.append(html.escape(mix_summary))
 
     if "ai_confidence" in df.columns:
@@ -343,36 +551,41 @@ def build_digest(
         lines.append("")
         lines.append("No deals matched this filter.")
     else:
-        stock_up = filtered[filtered["action_label"] == ACTION_STOCK_UP]
-        buy = filtered[filtered["action_label"] == ACTION_BUY]
-        compare = filtered[filtered["action_label"] == ACTION_COMPARE]
+        if category_group == "proteins":
+            shown = _append_protein_sections(lines, filtered, max(1, limit))
+            if shown == 0:
+                _append_section(lines, "Top protein deals", filtered, min(limit, len(filtered)))
+        else:
+            stock_up = filtered[filtered["action_label"] == ACTION_STOCK_UP]
+            buy = filtered[filtered["action_label"] == ACTION_BUY]
+            compare = filtered[filtered["action_label"] == ACTION_COMPARE]
 
-        remaining = max(1, limit)
-        stock_limit = min(5, len(stock_up), remaining)
-        remaining -= stock_limit
-        buy_limit = min(4, len(buy), remaining)
-        remaining -= buy_limit
-        compare_limit = min(3, len(compare), remaining)
-        remaining -= compare_limit
+            remaining = max(1, limit)
+            stock_limit = min(5, len(stock_up), remaining)
+            remaining -= stock_limit
+            buy_limit = min(4, len(buy), remaining)
+            remaining -= buy_limit
+            compare_limit = min(3, len(compare), remaining)
+            remaining -= compare_limit
 
-        if remaining > 0 and buy_limit < len(buy):
-            extra = min(remaining, len(buy) - buy_limit)
-            buy_limit += extra
-            remaining -= extra
-        if remaining > 0 and stock_limit < len(stock_up):
-            extra = min(remaining, len(stock_up) - stock_limit)
-            stock_limit += extra
-            remaining -= extra
-        if remaining > 0 and compare_limit < len(compare):
-            compare_limit += min(remaining, len(compare) - compare_limit)
+            if remaining > 0 and buy_limit < len(buy):
+                extra = min(remaining, len(buy) - buy_limit)
+                buy_limit += extra
+                remaining -= extra
+            if remaining > 0 and stock_limit < len(stock_up):
+                extra = min(remaining, len(stock_up) - stock_limit)
+                stock_limit += extra
+                remaining -= extra
+            if remaining > 0 and compare_limit < len(compare):
+                compare_limit += min(remaining, len(compare) - compare_limit)
 
-        shown = 0
-        shown += _append_section(lines, "Stock up now", stock_up, stock_limit)
-        shown += _append_section(lines, ACTION_BUY, buy, buy_limit)
-        shown += _append_section(lines, ACTION_COMPARE, compare, compare_limit)
+            shown = 0
+            shown += _append_section(lines, "Stock up now", stock_up, stock_limit)
+            shown += _append_section(lines, ACTION_BUY, buy, buy_limit)
+            shown += _append_section(lines, ACTION_COMPARE, compare, compare_limit)
 
-        if shown == 0:
-            _append_section(lines, "Top deals", filtered, min(limit, len(filtered)))
+            if shown == 0:
+                _append_section(lines, "Top deals", filtered, min(limit, len(filtered)))
 
     lines.append("")
     lines.append(f"Generated {html.escape(datetime.now().strftime('%Y-%m-%d %H:%M'))}")
@@ -446,13 +659,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Print the digest instead of sending it.")
     parser.add_argument("--optional", action="store_true", help="Skip without failing when Telegram env vars are missing.")
     parser.add_argument("--get-updates", action="store_true", help="Print recent Telegram chat IDs for this bot token.")
-    parser.add_argument("--limit", type=int, default=int(os.getenv("TELEGRAM_DIGEST_LIMIT", "12")))
+    parser.add_argument("--limit", type=int, help="Maximum deals to include. Category groups have one-message defaults.")
     parser.add_argument("--min-score", type=float, default=float(os.getenv("TELEGRAM_MIN_SCORE", "80")))
     parser.add_argument("--store", default=os.getenv("TELEGRAM_STORE_FILTER") or None)
     parser.add_argument("--category", default=os.getenv("TELEGRAM_CATEGORY_FILTER") or None)
     parser.add_argument("--group", choices=sorted(CATEGORY_GROUPS), help="Send a focused category-group digest.")
     parser.add_argument("--silent", action="store_true", help="Send without a Telegram notification sound.")
     return parser.parse_args()
+
+
+def _default_limit(category_group: str | None) -> int:
+    if category_group:
+        env_key = f"TELEGRAM_{category_group.upper()}_LIMIT"
+        if os.getenv(env_key):
+            return int(os.getenv(env_key, "0"))
+        group = CATEGORY_GROUPS.get(category_group)
+        if group and group.get("default_limit"):
+            return int(group["default_limit"])
+    return int(os.getenv("TELEGRAM_DIGEST_LIMIT", "12"))
 
 
 def main() -> int:
@@ -470,7 +694,7 @@ def main() -> int:
         return 0
 
     message = build_digest(
-        limit=max(1, args.limit),
+        limit=max(1, args.limit or _default_limit(args.group)),
         min_score=args.min_score,
         store=args.store,
         category=args.category,

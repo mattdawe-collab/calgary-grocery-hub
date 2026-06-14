@@ -203,7 +203,7 @@ def telegram_groups(args: argparse.Namespace) -> list[str | None]:
 
     configured_groups = args.telegram_group
     if configured_groups is None:
-        raw = _config("PUBLICATION_TELEGRAM_GROUPS", "proteins")
+        raw = _config("PUBLICATION_TELEGRAM_GROUPS", "proteins,vegetables,pantry_others")
         configured_groups = [part.strip() for part in raw.split(",") if part.strip()]
 
     for group in configured_groups:
@@ -237,7 +237,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-telegram", action="store_true", help="Skip Telegram sends.")
     parser.add_argument("--dry-run-telegram", action="store_true", help="Print Telegram messages instead of sending.")
     parser.add_argument("--telegram-main", action="store_true", help="Also send the unfiltered main digest.")
-    parser.add_argument("--telegram-group", action="append", help="Telegram category group to send. Defaults to PUBLICATION_TELEGRAM_GROUPS or proteins.")
+    parser.add_argument("--telegram-group", action="append", help="Telegram category group to send. Defaults to PUBLICATION_TELEGRAM_GROUPS or proteins,vegetables,pantry_others.")
     parser.add_argument("--base-url", help="Public base URL for Telegram snapshot links.")
     parser.add_argument("--push-ref", default=_config("PUBLICATION_PUSH_REF", "HEAD:main"), help="Git refspec for data pushes.")
     parser.add_argument("--verify-deal-id", help="Specific deal id to verify on the public snapshot site.")
