@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Great Value red - $5.97 at Walmart</title>
+  <meta property="og:title" content="Great Value red - $5.97 at Walmart">
+  <meta property="og:description" content="Skip. Score 40, confidence 8. Other.">
+  <meta name="description" content="Skip. Score 40, confidence 8. Other.">
+  <style>
+    body {
+      margin: 0;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
+    }
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .panel {
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 22px;
+      box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
+    }
+    .kicker {
+      font-size: 13px;
+      color: #2563eb;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      margin-bottom: 8px;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 28px;
+      line-height: 1.15;
+    }
+    .price {
+      font-size: 34px;
+      font-weight: 800;
+      color: #15803d;
+      margin-right: 10px;
+    }
+    .store {
+      color: #475569;
+      font-size: 16px;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 16px 0;
+    }
+    .pill {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      color: #1d4ed8;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin: 18px 0;
+    }
+    .stat {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 12px;
+      text-align: center;
+    }
+    .stat-value {
+      font-size: 18px;
+      font-weight: 800;
+    }
+    .stat-label {
+      font-size: 12px;
+      color: #64748b;
+      margin-top: 3px;
+    }
+    .chart-card {
+      background: #fbfdff;
+      border: 1px solid #dbeafe;
+      border-radius: 10px;
+      padding: 14px;
+      margin: 18px 0;
+    }
+    .chart-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 8px;
+    }
+    .chart-head h2 {
+      margin: 0 0 4px;
+    }
+    .chart-head p {
+      margin: 0;
+      color: #64748b;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    .chart-now {
+      flex: 0 0 auto;
+      color: #166534;
+      background: #dcfce7;
+      border: 1px solid #86efac;
+      border-radius: 999px;
+      padding: 6px 9px;
+      font-size: 13px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .price-chart {
+      display: block;
+      width: 100%;
+      height: auto;
+      overflow: visible;
+    }
+    .chart-axis {
+      stroke: #94a3b8;
+      stroke-width: 1.2;
+    }
+    .chart-grid {
+      stroke: #e2e8f0;
+      stroke-width: 1;
+    }
+    .chart-avg {
+      stroke: #f59e0b;
+      stroke-width: 1.4;
+      stroke-dasharray: 5 5;
+    }
+    .chart-line {
+      fill: none;
+      stroke: #2563eb;
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .chart-dot {
+      fill: white;
+      stroke: #2563eb;
+      stroke-width: 2;
+    }
+    .chart-current {
+      fill: #16a34a;
+      stroke: white;
+      stroke-width: 2.5;
+    }
+    .chart-current-label {
+      fill: #14532d;
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .chart-avg-label,
+    .chart-tick {
+      fill: #64748b;
+      font-size: 12px;
+    }
+    h2 {
+      font-size: 15px;
+      margin: 20px 0 8px;
+      color: #334155;
+    }
+    ul {
+      margin: 0;
+      padding-left: 20px;
+      color: #334155;
+    }
+    li {
+      margin: 5px 0;
+    }
+    .footer {
+      margin-top: 20px;
+      color: #64748b;
+      font-size: 13px;
+    }
+    .footer a {
+      color: #2563eb;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    @media (max-width: 560px) {
+      main { padding: 14px; }
+      .panel { padding: 16px; border-radius: 10px; }
+      h1 { font-size: 23px; }
+      .price { font-size: 30px; display: block; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .chart-head { display: block; }
+      .chart-now { display: inline-block; margin-top: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="panel">
+      <div class="kicker">Skip</div>
+      <h1>Great Value red</h1>
+      <div>
+        <span class="price">$5.97</span>
+        <span class="store">at Walmart</span>
+      </div>
+      <div class="meta">
+        <span class="pill">Score 40</span>
+        <span class="pill">Confidence 8</span>
+        <span class="pill">Other</span>
+        
+        
+      </div>
+      <div class="stats">
+        
+      <div class="stat">
+        <div class="stat-value">$5.97</div>
+        <div class="stat-label">Historical Low</div>
+      </div>
+    
+        
+      <div class="stat">
+        <div class="stat-value">N/A</div>
+        <div class="stat-label">Average</div>
+      </div>
+    
+        
+      <div class="stat">
+        <div class="stat-value">N/A</div>
+        <div class="stat-label">Historical High</div>
+      </div>
+    
+        
+      <div class="stat">
+        <div class="stat-value">0</div>
+        <div class="stat-label">Times Seen</div>
+      </div>
+    
+        
+      <div class="stat">
+        <div class="stat-value">N/A</div>
+        <div class="stat-label">Percentile</div>
+      </div>
+    
+        
+      <div class="stat">
+        <div class="stat-value">~44.5x</div>
+        <div class="stat-label">Sales/Month</div>
+      </div>
+    
+      </div>
+      
+      <section class="chart-card" aria-labelledby="price-history-title">
+        <div class="chart-head">
+          <div>
+            <h2 id="price-history-title">Price history</h2>
+            <p>Lowest observed flyer price by date. Current deal highlighted.</p>
+          </div>
+          <span class="chart-now">Current $5.97</span>
+        </div>
+        <svg class="price-chart" viewBox="0 0 640 220" role="img" aria-labelledby="price-chart-title price-chart-desc">
+          <title id="price-chart-title">Price history for Great Value red</title>
+          <desc id="price-chart-desc">Recent price observations from Dec 22 to Sep 3 with current price highlighted.</desc>
+          <line class="chart-axis" x1="52" x2="618" y1="178" y2="178"></line>
+          <line class="chart-axis" x1="52" x2="52" y1="22" y2="178"></line>
+          <line class="chart-grid" x1="52" x2="618" y1="22" y2="22"></line>
+          <line class="chart-grid" x1="52" x2="618" y1="100.0" y2="100.0"></line>
+          
+          <polyline class="chart-line" points="52.0,40.3 83.4,143.7 114.9,167.8 146.3,152.2 177.8,167.2 209.2,152.2 240.7,139.7 272.1,154.3 303.6,167.2 335.0,162.6 366.4,167.8 397.9,168.2 429.3,169.5 460.8,167.9 492.2,109.3 523.7,167.9 555.1,164.4 586.6,171.3 618.0,136.9"></polyline>
+          <circle class="chart-dot" cx="52.0" cy="40.3" r="3.3"><title>Dec 22: $19.99</title></circle>
+<circle class="chart-dot" cx="83.4" cy="143.7" r="3.3"><title>Jan 1: $4.98</title></circle>
+<circle class="chart-dot" cx="114.9" cy="167.8" r="3.3"><title>Jan 7: $1.48</title></circle>
+<circle class="chart-dot" cx="146.3" cy="152.2" r="3.3"><title>Jan 14: $3.74</title></circle>
+<circle class="chart-dot" cx="177.8" cy="167.2" r="3.3"><title>Jan 21: $1.57</title></circle>
+<circle class="chart-dot" cx="209.2" cy="152.2" r="3.3"><title>Jan 22: $3.74</title></circle>
+<circle class="chart-dot" cx="240.7" cy="139.7" r="3.3"><title>Jan 29: $5.56</title></circle>
+<circle class="chart-dot" cx="272.1" cy="154.3" r="3.3"><title>Feb 5: $3.44</title></circle>
+<circle class="chart-dot" cx="303.6" cy="167.2" r="3.3"><title>Feb 12: $1.57</title></circle>
+<circle class="chart-dot" cx="335.0" cy="162.6" r="3.3"><title>Feb 19: $2.24</title></circle>
+<circle class="chart-dot" cx="366.4" cy="167.8" r="3.3"><title>Feb 26: $1.48</title></circle>
+<circle class="chart-dot" cx="397.9" cy="168.2" r="3.3"><title>Mar 12: $1.43</title></circle>
+<circle class="chart-dot" cx="429.3" cy="169.5" r="3.3"><title>Mar 19: $1.24</title></circle>
+<circle class="chart-dot" cx="460.8" cy="167.9" r="3.3"><title>Mar 26: $1.47</title></circle>
+<circle class="chart-dot" cx="492.2" cy="109.3" r="3.3"><title>Apr 2: $9.97</title></circle>
+<circle class="chart-dot" cx="523.7" cy="167.9" r="3.3"><title>Apr 9: $1.47</title></circle>
+<circle class="chart-dot" cx="555.1" cy="164.4" r="3.3"><title>Apr 16: $1.97</title></circle>
+<circle class="chart-dot" cx="586.6" cy="171.3" r="3.3"><title>Apr 23: $0.98</title></circle>
+<circle class="chart-dot" cx="618.0" cy="136.9" r="3.3"><title>Sep 3: $5.97</title></circle>
+          <circle class="chart-current" cx="618.0" cy="136.9" r="6"></circle>
+          <text class="chart-current-label" x="610.0" y="126.9" text-anchor="end">Current $5.97</text>
+          <text class="chart-tick" x="52" y="206" text-anchor="start">Dec 22</text>
+          <text class="chart-tick" x="618" y="206" text-anchor="end">Sep 3</text>
+          <text class="chart-tick" x="44" y="44.3" text-anchor="end">$19.99</text>
+          <text class="chart-tick" x="44" y="175.3" text-anchor="end">$0.98</text>
+        </svg>
+      </section>
+    
+      <h2>Why it made the list</h2>
+      <ul><li>No price history</li><li>Category reviewed</li></ul>
+      <h2>This week's store comparison</h2>
+      <ul><li>Walmart: $5.97</li></ul>
+      <div class="footer">
+        Snapshot generated from Calgary Grocery Hub data.
+        <a href="https://mattdawe-collab.github.io/calgary-grocery-hub/">Open dashboard</a>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
