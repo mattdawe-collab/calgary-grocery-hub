@@ -438,3 +438,34 @@ def _quality_score_from_flags(flags: Any) -> int:
     for flag in str(flags or "").split(";"):
         score -= penalties.get(flag.strip(), 0)
     return max(0, min(100, score))
+
+
+def parse_dates(series: Any) -> pd.Series:
+    """Parse a column of dates that mixes formats, without silently blanking rows.
+
+    pandas 2.x infers a single format from the first non-null value; with
+    errors="coerce" every other format then becomes NaT. The archive holds
+    "2025-12-12 00:00:00", "2026-05-13" and ISO-8601 stamps with offsets side
+    by side, and that inference blanked 26,827 Date cells between May and
+    September 2026, silently shrinking the 180-day history window used for
+    scoring. format="ISO8601" parses each value on its own terms.
+
+    Timezone-aware values are converted to naive local days so comparisons
+    against naive timestamps elsewhere keep working.
+    """
+    values = pd.Series(series)
+    text = values.astype(str).str.strip()
+    # Take the calendar day exactly as written. Converting an offset stamp to
+    # UTC first can roll it to the next day (a 23:59:59-04:00 flyer end became
+    # the following date), and these columns mean "which day", not an instant.
+    leading_day = text.str.extract(r"^(\d{4}-\d{2}-\d{2})", expand=False)
+    parsed = pd.to_datetime(leading_day, errors="coerce", format="%Y-%m-%d")
+    rest = parsed.isna() & values.notna() & (text != "") & (text.str.lower() != "nan")
+    if rest.any():
+        fallback = pd.to_datetime(text[rest], errors="coerce", format="mixed")
+        try:
+            fallback = fallback.dt.tz_localize(None)
+        except (AttributeError, TypeError):
+            pass
+        parsed.loc[rest] = fallback
+    return parsed

@@ -20,6 +20,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
+
+import requests
 from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -39,6 +42,27 @@ if hasattr(sys.stderr, "reconfigure"):
 
 class ChainError(RuntimeError):
     pass
+
+
+def send_alert(text: str, post=requests.post) -> bool:
+    """Send an ops message to the PRIVATE alert chat (never the public channel)."""
+    token = _config("TELEGRAM_BOT_TOKEN")
+    chat_id = _config("TELEGRAM_ALERT_CHAT_ID")
+    if not token or not chat_id:
+        print("[alert skipped] TELEGRAM_ALERT_CHAT_ID (private chat) and TELEGRAM_BOT_TOKEN are needed for ops alerts.")
+        print(f"[alert text] {text}")
+        return False
+    try:
+        response = post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text[:4000], "disable_web_page_preview": True},
+            timeout=30,
+        )
+        response.raise_for_status()
+        return bool(response.json().get("ok"))
+    except Exception as exc:  # alerting must never mask the real failure
+        print(f"[alert failed] {exc}")
+        return False
 
 
 def _load_env_file(path: Path) -> dict[str, str]:
@@ -284,8 +308,10 @@ def main() -> int:
         else:
             print("Skipping Telegram send.")
 
-    except ChainError as exc:
-        print(f"\nERROR: {exc}", file=sys.stderr)
+    except Exception as exc:
+        traceback.print_exc()
+        print(f"\nERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        send_alert(f"\u274c Calgary Grocery Hub weekly run FAILED\n{exc}\n\nProject: {ROOT}")
         return 1
 
     print("\nPublication chain complete.")

@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from data_quality import (
     add_quality_metadata,
+    parse_dates,
     filter_grocery_relevant,
     repair_category,
     sanitize_unit_prices,
@@ -39,7 +40,7 @@ def to_python(val):
 
 def modal_datetime(series: pd.Series) -> pd.Timestamp | None:
     """Return a representative datetime by most-common calendar date."""
-    parsed = pd.to_datetime(series, errors="coerce")
+    parsed = parse_dates(series)
     parsed = parsed.dropna()
     if parsed.empty:
         return None
@@ -183,10 +184,10 @@ class DataStore:
         valid_until_max = None
         extended_flyer_count = 0
         if "Valid_From" in df.columns:
-            vf = pd.to_datetime(df["Valid_From"], errors="coerce")
+            vf = parse_dates(df["Valid_From"])
             valid_from = str(vf.min()) if vf.notna().any() else None
         if "Valid_Until" in df.columns:
-            vu = pd.to_datetime(df["Valid_Until"], errors="coerce")
+            vu = parse_dates(df["Valid_Until"])
             representative_until = modal_datetime(df["Valid_Until"])
             valid_until = str(representative_until) if representative_until is not None else None
             valid_until_max = str(vu.max()) if vu.notna().any() else None
