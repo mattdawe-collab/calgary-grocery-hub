@@ -85,3 +85,10 @@ dashboard/node_modules/
 
 # Generated static deal snapshot site
 static_snapshots/
+
+# Regenerated each run; the weekly page reads it locally
+weekly_reports_latest.json
+weekly_post_FACEBOOK_*.txt
+
+# Generated weekly reports live here now
+reports/

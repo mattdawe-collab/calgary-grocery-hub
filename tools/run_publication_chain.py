@@ -2,12 +2,15 @@
 Run the public Calgary Grocery Hub publication chain.
 
 Order matters:
+0. Preflight: an AI backend must be available (Claude CLI logged in), or the
+   run stops and alerts the private Telegram chat before anything is published.
 1. Refresh deal data.
-2. Generate weekly reports.
+2. Generate weekly reports (store, category, Facebook post).
 3. Commit and push data CSVs to main.
-4. Rebuild and publish static snapshot cards to GitHub Pages.
+4. Rebuild and publish the weekly page + snapshot cards to GitHub Pages.
 5. Verify a live snapshot card.
 6. Send Telegram only after the public links are live.
+7. Send a short success/failure summary to the private alert chat.
 """
 
 from __future__ import annotations
@@ -21,8 +24,6 @@ import sys
 import tempfile
 import time
 import traceback
-
-import requests
 from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -32,6 +33,9 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import requests
+
+from ai_backends import select_backend, usable_backend
 from tools.generate_static_snapshots import DEFAULT_OUTPUT, generate
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -42,6 +46,27 @@ if hasattr(sys.stderr, "reconfigure"):
 
 class ChainError(RuntimeError):
     pass
+
+
+def preflight_ai_backend() -> str:
+    """Prove an AI backend answers before anything is scraped or published.
+
+    Three months of silently degraded runs (Jun-Sep 2026) is why this exists,
+    and 2026-10-21 is why it now *verifies* instead of reading the
+    environment: an expired CLI login and an API key with no credit balance
+    both look fine until the first real call. Set AI_REQUIRE_BACKEND=0 to
+    allow a statistical-only run.
+    """
+    backend = usable_backend(verbose=True)
+    if backend["type"] == "statistical" and _config("AI_REQUIRE_BACKEND", "1") != "0":
+        tried = "; ".join(
+            f"{a['backend']}: {a['reason']}" for a in backend.get("attempts", []) if not a["ok"]
+        ) or backend["reason"]
+        raise ChainError(
+            "No AI backend answered, stopping before anything is published. "
+            f"Tried - {tried}. (Set AI_REQUIRE_BACKEND=0 to run statistical-only.)"
+        )
+    return backend["type"]
 
 
 def send_alert(text: str, post=requests.post) -> bool:
@@ -81,7 +106,21 @@ def _load_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def load_env_file_into_environ(path: Path) -> None:
+    """Make .env visible to this process, not just to its subprocesses.
+
+    The chain runs the AI preflight in-process. It used to merge .env only
+    into the environment handed to child processes, so the preflight read
+    os.environ, found no ANTHROPIC_API_KEY, and stopped the run with the key
+    sitting in .env the whole time. setdefault keeps a real environment
+    variable winning over the file.
+    """
+    for key, value in _load_env_file(path).items():
+        os.environ.setdefault(key, value)
+
+
 ENV_FILE_VALUES = _load_env_file(ROOT / ".env")
+load_env_file_into_environ(ROOT / ".env")
 
 
 def _config(name: str, default: str = "") -> str:
@@ -160,27 +199,23 @@ def commit_and_push_data(push_ref: str) -> bool:
 
 
 def publish_snapshots(output_dir: Path, remote: str) -> None:
-    temp_root = Path(tempfile.gettempdir()).resolve()
-    publish_dir = (temp_root / "calgary-grocery-gh-pages").resolve()
-    if not str(publish_dir).lower().startswith(str(temp_root).lower()):
-        raise ChainError(f"Refusing to clean unsafe temp path: {publish_dir}")
-    if publish_dir.exists():
-        shutil.rmtree(publish_dir)
-    publish_dir.mkdir(parents=True)
+    publish_dir = Path(tempfile.mkdtemp(prefix="calgary-grocery-gh-pages-")).resolve()
+    try:
+        for item in output_dir.iterdir():
+            destination = publish_dir / item.name
+            if item.is_dir():
+                shutil.copytree(item, destination)
+            else:
+                shutil.copy2(item, destination)
 
-    for item in output_dir.iterdir():
-        destination = publish_dir / item.name
-        if item.is_dir():
-            shutil.copytree(item, destination)
-        else:
-            shutil.copy2(item, destination)
-
-    run_step("Initialize gh-pages worktree", ["git", "init", "-q"], cwd=publish_dir)
-    run_step("Create gh-pages branch", ["git", "checkout", "-b", "gh-pages"], cwd=publish_dir)
-    run_step("Stage snapshot site", ["git", "add", "-A"], cwd=publish_dir)
-    run_step("Commit snapshot site", ["git", "commit", "-m", "Publish static deal snapshots"], cwd=publish_dir)
-    run_step("Set gh-pages remote", ["git", "remote", "add", "origin", remote], cwd=publish_dir)
-    run_step("Push snapshot site", ["git", "push", "--force", "origin", "gh-pages"], cwd=publish_dir)
+        run_step("Initialize gh-pages worktree", ["git", "init", "-q"], cwd=publish_dir)
+        run_step("Create gh-pages branch", ["git", "checkout", "-b", "gh-pages"], cwd=publish_dir)
+        run_step("Stage snapshot site", ["git", "add", "-A"], cwd=publish_dir)
+        run_step("Commit snapshot site", ["git", "commit", "-m", "Publish static deal snapshots"], cwd=publish_dir)
+        run_step("Set gh-pages remote", ["git", "remote", "add", "origin", remote], cwd=publish_dir)
+        run_step("Push snapshot site", ["git", "push", "--force", "origin", "gh-pages"], cwd=publish_dir)
+    finally:
+        shutil.rmtree(publish_dir, ignore_errors=True)
 
 
 def first_snapshot_id(output_dir: Path, requested_id: str | None = None) -> str:
@@ -252,8 +287,63 @@ def send_telegram_messages(args: argparse.Namespace, base_url: str) -> None:
         run_step(f"Send Telegram {label}", cmd, env=env)
 
 
+
+def run_summary(base_url: str, elapsed_minutes: int, backend: str = "") -> str:
+    """Build the post-run Telegram alert.
+
+    "Complete" on its own is what let three months of degraded runs pass
+    unnoticed, so the alert carries the numbers that say whether the run was
+    any good: how many deals, how many worth a trip, and how the scoring was
+    actually produced.
+    """
+    lines = [f"\u2705 Calgary Grocery Hub - run complete in {elapsed_minutes} min"]
+    if backend:
+        lines.append(f"Backend: {backend}")
+    warnings: list[str] = []
+
+    try:
+        import pandas as pd
+
+        from data_quality import parse_dates
+
+        deals = pd.read_csv(ROOT / "current_flyers.csv", low_memory=False)
+        scores = pd.to_numeric(deals.get("deal_score"), errors="coerce").fillna(0)
+        strong = int((scores >= 80).sum())
+
+        start = parse_dates(deals["Valid_From"]).dropna() if "Valid_From" in deals else None
+        end = parse_dates(deals["Valid_Until"]).dropna() if "Valid_Until" in deals else None
+        if start is not None and len(start) and end is not None and len(end):
+            lines.append(
+                f"Week: {start.dt.strftime('%Y-%m-%d').mode().iloc[0]} to "
+                f"{end.dt.strftime('%Y-%m-%d').mode().iloc[0]}"
+            )
+        lines.append(f"{len(deals):,} deals - {strong:,} worth a trip (80+)")
+
+        confidence = deals.get("ai_confidence")
+        if confidence is not None:
+            confidence = confidence.astype(str)
+            model = int(confidence.isin(["claude_code", "gemini", "anthropic", "claude"]).sum())
+            cached = int((confidence == "cached").sum())
+            fallback = int((confidence == "statistical").sum())
+            lines.append(f"Scoring: {model:,} model / {cached:,} cached / {fallback:,} fallback")
+            if len(deals) and fallback / len(deals) > 0.10:
+                warnings.append(
+                    f"WARNING: {fallback / len(deals):.0%} of items fell back to statistical scoring. "
+                    "Check `claude auth status`."
+                )
+        if len(deals) and strong / len(deals) < 0.02:
+            warnings.append("WARNING: almost nothing scored 80+. Check the history archive.")
+    except Exception as exc:  # the alert must never break the run
+        warnings.append(f"(could not summarise deal data: {exc})")
+
+    lines.extend(warnings)
+    lines.append(f"{base_url.rstrip('/')}/")
+    return "\n".join(lines)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Calgary Grocery Hub public publication chain.")
+    parser.add_argument("--skip-ai-preflight", action="store_true", help="Do not require an AI backend before running.")
     parser.add_argument("--skip-scrape", action="store_true", help="Skip get_deals.py.")
     parser.add_argument("--skip-reports", action="store_true", help="Skip weekly_report_generator.py.")
     parser.add_argument("--skip-data-push", action="store_true", help="Skip committing and pushing CSV data.")
@@ -282,7 +372,14 @@ def main() -> int:
     print(f"Project: {ROOT}")
     print(f"Public snapshot base: {base_url}")
 
+    started = datetime.now()
     try:
+        backend_used = ""
+        if not getattr(args, "skip_ai_preflight", False):
+            print("\n== Preflight: AI backend ==")
+            backend_used = preflight_ai_backend()
+            print(f"AI backend ready: {backend_used}")
+
         if not args.skip_scrape:
             run_step("Refresh flyer data", [sys.executable, "get_deals.py"], env=env)
         if not args.skip_reports:
@@ -314,7 +411,12 @@ def main() -> int:
         send_alert(f"\u274c Calgary Grocery Hub weekly run FAILED\n{exc}\n\nProject: {ROOT}")
         return 1
 
+    elapsed = datetime.now() - started
     print("\nPublication chain complete.")
+    summary = run_summary(base_url, int(elapsed.total_seconds() // 60), backend=backend_used)
+    print(summary)
+    if _config("TELEGRAM_ALERT_ON_SUCCESS", "1") != "0":
+        send_alert(summary)
     return 0
 
 

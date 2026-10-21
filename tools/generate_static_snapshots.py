@@ -1,5 +1,5 @@
 """
-Generate static deal snapshot pages for public Telegram links.
+Generate the public weekly page plus static deal snapshot pages.
 
 This mirrors the FastAPI /share/deals/{id} route but writes plain HTML files so
 the snapshots can be served from static hosts such as GitHub Pages.
@@ -8,10 +8,9 @@ the snapshots can be served from static hosts such as GitHub Pages.
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
-from datetime import datetime
-from html import escape
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from api.data import store
 from api.routes.share import render_deal_snapshot_html
+from tools.weekly_page import build_page_model, render_weekly_page
 
 
 DEFAULT_OUTPUT = ROOT / "static_snapshots"
@@ -28,49 +28,6 @@ def _clean_output(output_dir: Path) -> None:
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-
-def _write_index(output_dir: Path, base_url: str, count: int) -> None:
-    generated = datetime.now().strftime("%Y-%m-%d %H:%M")
-    html = f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Calgary Grocery Hub Snapshots</title>
-  <style>
-    body {{
-      margin: 0;
-      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #f8fafc;
-      color: #0f172a;
-    }}
-    main {{
-      max-width: 680px;
-      margin: 0 auto;
-      padding: 28px;
-    }}
-    h1 {{
-      margin: 0 0 10px;
-      font-size: 28px;
-    }}
-    p {{
-      color: #475569;
-      line-height: 1.5;
-    }}
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Calgary Grocery Hub Snapshots</h1>
-    <p>{count:,} current deal snapshot pages generated {escape(generated)}.</p>
-    <p>Telegram deal links open individual <code>/share/deals/&lt;id&gt;</code> pages from this static site.</p>
-    <p>Base URL: <a href="{escape(base_url)}">{escape(base_url)}</a></p>
-  </main>
-</body>
-</html>"""
-    (output_dir / "index.html").write_text(html, encoding="utf-8")
-    (output_dir / ".nojekyll").write_text("", encoding="utf-8")
 
 
 def generate(output_dir: Path, base_url: str) -> int:
@@ -89,8 +46,22 @@ def generate(output_dir: Path, base_url: str) -> int:
         (page_dir / "index.html").write_text(page, encoding="utf-8")
         count += 1
 
-    _write_index(output_dir, base_url, count)
+    _write_weekly_page(output_dir, base_url)
+    (output_dir / ".nojekyll").write_text("", encoding="utf-8")
     return count
+
+
+def _write_weekly_page(output_dir: Path, base_url: str) -> None:
+    """Root index.html = the public 'This Week's Deals' page (every deal, linked to its card)."""
+    latest = None
+    latest_path = ROOT / "reports" / "weekly_reports_latest.json"
+    if latest_path.exists():
+        try:
+            latest = json.loads(latest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"Warning: could not read {latest_path.name}: {exc}")
+    model = build_page_model(store.current, latest, base_url)
+    (output_dir / "index.html").write_text(render_weekly_page(model), encoding="utf-8")
 
 
 def parse_args() -> argparse.Namespace:

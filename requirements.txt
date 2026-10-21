@@ -8,7 +8,8 @@ numpy
 # Anthropic Claude API
 anthropic
 
-# Google AI - Legacy (dashboard.py still references)
+# Google AI - current SDK plus legacy Streamlit compatibility
+google-genai
 google-generativeai
 pydantic
 
@@ -28,3 +29,7 @@ psycopg2-binary  # PostgreSQL driver for SQLAlchemy
 # FastAPI / Railway deployment
 fastapi
 uvicorn[standard]
+
+# Optional quality-of-life/scoring helpers used when available
+scipy
+tqdm

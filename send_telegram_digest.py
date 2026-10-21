@@ -20,7 +20,14 @@ from urllib.parse import quote
 import pandas as pd
 import requests
 from dotenv import load_dotenv
-from data_quality import add_quality_metadata, filter_grocery_relevant, repair_category, sanitize_unit_prices
+from data_quality import (
+    add_quality_metadata,
+    dedupe_sister_banners,
+    filter_grocery_relevant,
+    infer_price_basis,
+    repair_category,
+    sanitize_unit_prices,
+)
 from deal_guidance import (
     ACTION_BUY,
     ACTION_COMPARE,
@@ -332,6 +339,16 @@ def _deal_label(row: pd.Series, rank: int | None = None, deal_id=None) -> str:
     item = f'<a href="{html.escape(item_url, quote=True)}">{item_text}</a>' if item_url else f"<b>{item_text}</b>"
     store = html.escape(str(row.get("Store", "")).strip())
     price = html.escape(_money(row.get("Price_Value")))
+    # Flipp sends no unit; meat quoted per pound must say so or "$2.19" reads
+    # like a whole turkey next to an $18.00 one.
+    if infer_price_basis(
+        row.get("Item"),
+        row.get("display_category", row.get("ai_category")),
+        row.get("Price_Value"),
+        row.get("price_basis"),
+        row.get("unit_price"),
+    ) == "per_lb":
+        price = f"{price}/lb"
 
     unit = ""
     unit_price = row.get("unit_price")
@@ -414,7 +431,11 @@ def _filter_deals(
         sort_cols.append("Price_Value")
         ascending.append(True)
 
-    return df.sort_values(sort_cols, ascending=ascending, na_position="last")
+    ordered = df.sort_values(sort_cols, ascending=ascending, na_position="last")
+    # Sobeys/Safeway and Superstore/No Frills run one flyer between them, so
+    # the same deal used to eat two slots on a short list.
+    kept = set(dedupe_sister_banners(ordered).index)
+    return ordered.loc[[i for i in ordered.index if i in kept]]
 
 
 def _action_summary(df: pd.DataFrame) -> str:
@@ -533,6 +554,9 @@ def build_digest(
     ]
     if long_until:
         lines.append(f"Long-running flyer to {html.escape(long_until)}.")
+    page_url = _public_dashboard_url()
+    if page_url:
+        lines.append(f'Every deal, every store, with price history: <a href="{html.escape(page_url)}/">{html.escape(page_url)}/</a>')
 
     store_summary = _top_store_summary(filtered)
     if store_summary:

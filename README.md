@@ -1,224 +1,246 @@
-# 🛒 Calgary Grocery Hub
+# Calgary Grocery Hub
 
-A smart grocery deal tracker that scrapes weekly flyers from Calgary stores, uses AI to categorize items, and provides historical price analysis through an interactive dashboard.
+A local weekly grocery deal aggregator for Calgary. It pulls current flyer data
+from Flipp, enriches items with AI/statistical scoring, maintains historical
+price context, and serves a React dashboard through FastAPI.
 
-## 📋 Features
+## Current Shape
 
-- **Automated Flyer Scraping**: Collects deals from 6+ Calgary grocery stores weekly
-- **AI-Powered Categorization**: Uses Google Gemini to intelligently categorize and clean product names
-- **Historical Price Tracking**: Maintains price history to identify true deals vs. inflated "sales"
-- **Interactive Dashboard**: Streamlit-based UI for browsing deals and analyzing trends
-- **Geographic Intelligence**: Localized to Calgary with postal code-based searches
-- **Deal Analysis**: Real-time AI assessment of whether a price is actually a good deal
+- Scraper: `get_deals.py`
+- Report generator: `weekly_report_generator.py`
+- Current data: `current_flyers.csv`
+- Historical data: `historical_archive.csv`
+- API and production server: `api/main.py`
+- React dashboard source: `dashboard/src/`
+- Legacy dashboard: `dashboard.py` (Streamlit)
 
-## 🏪 Supported Stores
+The React dashboard is the revived default path. FastAPI serves both `/api/*`
+and the built React app from `dashboard/dist/`.
 
-- Real Canadian Superstore
-- Save-On-Foods
-- Calgary Co-op
-- Sobeys
-- Safeway
-- No Frills
+## Quick Start
 
-## 🚀 Quick Start
+Install Python dependencies:
 
-### Prerequisites
-
-- Python 3.8 or higher
-- Google Gemini API key ([Get one here](https://makersuite.google.com/app/apikey))
-- Network access (for scraping flyers)
-
-### Installation
-
-1. **Clone or download this project to your NAS**
-   ```
-   Y:\Python Projects\Weekly Deals\
-   ```
-
-2. **Install dependencies**
-   ```bash
-   cd "Y:\Python Projects\Weekly Deals"
-   pip install -r requirements.txt
-   ```
-
-3. **Configure environment**
-   ```bash
-   # Copy the template
-   cp .env.template .env
-   
-   # Edit .env and add your GEMINI_API_KEY
-   ```
-
-4. **Verify installation**
-   ```bash
-   python verify_installation.py
-   ```
-
-### Usage
-
-#### Scrape Flyers (Run Weekly)
-```bash
-python get_deals.py
+```powershell
+cd "Z:\Weekly Deals"
+python -m pip install -r requirements.txt
 ```
 
-This will:
-1. Fetch current flyers from all stores
-2. Extract and categorize items using AI
-3. Update your price history database
-4. Generate clean data for the dashboard
+Install and build the React dashboard:
 
-#### Launch Dashboard
-```bash
+```powershell
+cd "Z:\Weekly Deals\dashboard"
+npm install
+npm run build
+```
+
+Verify the install:
+
+```powershell
+cd "Z:\Weekly Deals"
+python verify_installation.py
+```
+
+Start the dashboard:
+
+```powershell
+cd "Z:\Weekly Deals"
+python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+```
+
+Open: `http://localhost:8000`
+
+You can also double-click `start_dashboard.bat`; it starts the FastAPI server
+from the current project folder and builds the React dashboard if `dist/` is
+missing.
+
+## Refresh Weekly Deals
+
+The full weekly run is:
+
+```powershell
+cd "Z:\Weekly Deals"
+python get_deals.py
+python weekly_report_generator.py
+```
+
+For the existing Windows flow, run `rundeals.bat` or schedule
+`rundeals_scheduled.bat`.
+
+Notes:
+
+- `POSTAL_CODE` comes from `.env`; default is `T3M1M9`.
+- AI classification and the weekly write-ups run through the **Claude Code
+  CLI** on this machine (your subscription, no per-token billing). See
+  "AI backend" below.
+- If no AI backend is available the scheduled run stops before publishing and
+  alerts the private Telegram chat (`AI_REQUIRE_BACKEND=1`). Set it to `0` to
+  allow a statistical-only run.
+
+## AI backend
+
+`ai_backends.py` picks a backend and, since 2026-10-21, **proves it answers**
+before the run scrapes or publishes anything. Order (`AI_BACKEND=auto`):
+
+1. `anthropic` - the Anthropic API, using `ANTHROPIC_API_KEY`. This is the
+   primary because an API key does not expire. Scoring runs on
+   `claude-sonnet-5-5`, the three write-ups on `claude-opus-5-5`.
+2. `claude_code` - the local `claude` CLI, used when no API key is set or the
+   key fails verification. Needs a one-time `claude login` as the Windows
+   user that runs the scheduled task, and that login expires.
+3. `statistical` - no model; keyword categories only. The chain refuses to
+   publish on this unless `AI_REQUIRE_BACKEND=0`.
+
+Why verification matters: an expired CLI login and an API key with no credit
+balance both look healthy to anything that only reads environment variables.
+Both have taken down a Wednesday run. Preflight now spends a few tokens on a
+real round trip and names the exact problem.
+
+```powershell
+python ai_backends.py          # which backend would run, and why not the others
+python verify_installation.py  # full preflight
+```
+
+Item names already classified in `historical_archive.csv` are reused without a
+model call (`AI_NAME_CACHE=1`), and the three write-ups share one cached data
+block, so only the first pays full price for it.
+
+### Rough weekly cost on the API
+
+About 35 scoring calls plus 3 write-ups per run. Estimated from this week's
+flyer sizes, before prompt-cache savings:
+
+| Pass | Model | Per week |
+|---|---|---|
+| Scoring (~1,400 items) | `claude-sonnet-5-5` | ~$1.00 |
+| Scoring, cheaper option | `claude-haiku-5-5` | ~$0.05 |
+| Three write-ups | `claude-opus-5-5` | ~$1.05 |
+
+Caching the shared report data block cuts most of the write-up input cost
+from the second report onward.
+
+## Public weekly page
+
+Each run publishes `static_snapshots/index.html` to the GitHub Pages root: a
+"This Week's Deals" page with every deal, search and filters, and a link from
+each row to its price-history card at `/share/deals/<id>/`. The Telegram
+digests and the generated Facebook post (`weekly_post_FACEBOOK_*.txt`) link
+to it. Regenerate locally with:
+
+```powershell
+python tools/generate_static_snapshots.py
+```
+
+## Environment
+
+Copy `env.template` to `.env` and fill in the keys you want to use:
+
+```dotenv
+ANTHROPIC_API_KEY=...
+GEMINI_API_KEY=...
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_REPORT_MODEL=gemini-2.5-flash
+POSTAL_CODE=T3M1M9
+API_PORT=8000
+STREAMLIT_PORT=8501
+```
+
+## Useful Commands
+
+Build frontend:
+
+```powershell
+cd "Z:\Weekly Deals\dashboard"
+npm run build
+```
+
+Run API locally:
+
+```powershell
+cd "Z:\Weekly Deals"
+python -m uvicorn api.main:app --reload --port 8000
+```
+
+Run Vite dev server against the API:
+
+```powershell
+cd "Z:\Weekly Deals\dashboard"
+npm run start
+```
+
+Check API data:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/api/insights
+```
+
+Legacy Streamlit dashboard:
+
+```powershell
 streamlit run dashboard.py
 ```
 
-Access at: `http://your-nas-ip:8501`
+Send a Telegram digest preview:
 
-## 📁 Project Structure
-
-```
-Weekly Deals/
-├── .env                          # Your API keys (create from template)
-├── .env.template                 # Template for environment variables
-├── .gitignore                    # Git ignore rules
-├── requirements.txt              # Python dependencies
-├── README.md                     # This file
-├── NAS_SETUP_GUIDE.md           # Detailed NAS installation guide
-├── verify_installation.py        # Installation checker
-│
-├── get_deals.py                  # Main scraper script
-├── classifier.py                 # AI categorization module
-├── dashboard.py                  # Streamlit dashboard
-│
-├── seton_grocery_history.csv     # Raw historical data
-└── clean_grocery_data.csv        # Processed data (auto-generated)
+```powershell
+python send_telegram_digest.py --dry-run
 ```
 
-## 🔄 Automation
+Send the Telegram digest for real:
 
-### Windows Task Scheduler
-
-1. Open Task Scheduler
-2. Create Basic Task → "Weekly Grocery Scraper"
-3. Trigger: Weekly (Monday 6 AM recommended)
-4. Action: Start a program
-   - Program: `python`
-   - Arguments: `"Y:\Python Projects\Weekly Deals\get_deals.py"`
-   - Start in: `Y:\Python Projects\Weekly Deals`
-
-### Linux/Mac Cron
-
-```bash
-# Run every Monday at 6 AM
-0 6 * * 1 cd /path/to/project && python get_deals.py
+```powershell
+python send_telegram_digest.py
 ```
 
-## 🎯 Dashboard Features
+## Telegram Bot
 
-### Current Deals Tab
-- Browse all active flyer items
-- Filter by store, category, sub-category
-- Sort by price, savings %, or expiration
-- Search for specific products
-- AI-powered deal analysis with historical context
+1. Create a bot with Telegram's `@BotFather`.
+2. Add `TELEGRAM_BOT_TOKEN` to `.env`.
+3. Send any message to the bot from the Telegram chat you want to receive deals.
+4. Run `python send_telegram_digest.py --get-updates`.
+5. Copy the printed `chat_id` into `TELEGRAM_CHAT_ID` in `.env`.
 
-### Ask Data Tab
-- Natural language queries about prices and trends
-- Automatic chart generation
-- Compare stores and track price changes
-- Examples:
-  - "Compare current butter prices to last month"
-  - "Show me the cheapest protein options this week"
-  - "Which store has the best deals on produce?"
+Optional `.env` settings:
 
-## 🗄️ Database Schema
-
-### seton_grocery_history.csv (Raw Data)
-- `Date`: When item was scraped
-- `Store`: Store name
-- `Original_Name`: Raw product name from flyer
-- `Item`: AI-cleaned product name
-- `Category`: Primary category
-- `Sub_Category`: Detailed category
-- `Price_Text`: Original price text from flyer
-- `Price_Value`: Numeric price for analysis
-- `Valid_Until`: Deal expiration date
-
-### clean_grocery_data.csv (Dashboard Data)
-- All above fields plus:
-- `display_category`: User-friendly category names
-- `savings_pct`: Calculated savings percentage
-- `original_price`: Regular price (when available)
-
-## 🔮 Roadmap
-
-### Phase 1: Core Functionality ✅
-- [x] Flyer scraping
-- [x] AI categorization
-- [x] Historical tracking
-- [x] Dashboard with filtering
-
-### Phase 2: Database Migration (In Progress)
-- [ ] Migrate to Supabase PostgreSQL
-- [ ] Add geographic indexing
-- [ ] Real-time price updates
-- [ ] User preferences storage
-
-### Phase 3: Mobile Scanner
-- [ ] Barcode scanning interface
-- [ ] Real-time deal verification
-- [ ] Location-based recommendations
-- [ ] Shopping list integration
-
-### Phase 4: Advanced Analytics
-- [ ] Price prediction models
-- [ ] Seasonal trend analysis
-- [ ] Store comparison scoring
-- [ ] Deal alerts and notifications
-
-## 🛠️ Troubleshooting
-
-### "Module not found" errors
-```bash
-pip install -r requirements.txt
+```dotenv
+TELEGRAM_MIN_SCORE=80
+TELEGRAM_DIGEST_LIMIT=12
+TELEGRAM_STORE_FILTER=
+TELEGRAM_CATEGORY_FILTER=
 ```
 
-### Scraper returns no results
-- Check your internet connection
-- Verify postal code in .env or get_deals.py
-- Ensure Gemini API key is valid
+The weekly batch scripts call `send_telegram_digest.py --optional`, so they skip
+Telegram cleanly until the token and chat ID are configured.
 
-### Dashboard won't load
-- Check that Streamlit is installed: `pip install streamlit`
-- Try specifying host: `streamlit run dashboard.py --server.address 0.0.0.0`
-- Check firewall allows port 8501
+## Deployment
 
-### AI categorization fails
-- Verify GEMINI_API_KEY in .env
-- Check API quota at https://makersuite.google.com
-- Review classifier.py for errors
+Railway uses:
 
-## 📊 Data Privacy
+- `Procfile`
+- `railway.toml`
+- `api/main.py`
+- `dashboard/dist/`
+- `current_flyers.csv`
+- `historical_archive.csv`
 
-- All data is stored locally on your NAS
-- No personal information is collected
-- Flyer data is public information
-- AI categorization happens via Google's API (product names only)
+`push_to_github.bat` stages the data CSVs and pushes to `main`. If Railway is
+connected to GitHub, that push triggers the deploy.
 
-## 🤝 Contributing
+## Data Files
 
-This is a personal project, but suggestions are welcome!
+`current_flyers.csv` contains the current scrape output, including deal scores,
+AI categories, price basis, unit pricing, cross-store rank, and historical
+comparison fields.
 
-## 📝 License
+`historical_archive.csv` accumulates prior flyer observations and is used for
+price history, lowest-ever detection, and recurring sale context.
 
-Personal use project - modify as needed for your own grocery tracking needs.
+## Troubleshooting
 
-## 🙏 Acknowledgments
-
-- Flipp API for flyer data
-- Google Gemini for AI categorization
-- Streamlit for the dashboard framework
-
----
-
-**Questions?** Check the [NAS_SETUP_GUIDE.md](NAS_SETUP_GUIDE.md) for detailed installation help.
+- Run `python verify_installation.py` first; it checks the current file layout,
+  Python dependencies, data load, and local URLs.
+- If `vite` is missing or the dashboard build fails, run `npm install` in
+  `dashboard/`.
+- If scripts crash on Windows console encoding, make sure you are using the
+  revived entry points; they reconfigure stdout/stderr as UTF-8.
+- If the dashboard loads but data looks stale, run the weekly refresh commands.

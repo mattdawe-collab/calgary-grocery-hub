@@ -87,3 +87,13 @@ def test_pantry_others_excludes_proteins_vegetables_and_non_food_other():
     mask = _category_group_mask(df, "pantry_others", "display_category")
 
     assert df.loc[mask, "Item"].tolist() == ["Caramelized Onion Hummus", "Ataulfo Mangoes", "Pasta Sauce"]
+
+
+def test_digest_links_to_public_weekly_page(monkeypatch):
+    import send_telegram_digest as std
+    monkeypatch.setenv("PUBLIC_DASHBOARD_URL", "https://x.test")
+    monkeypatch.setattr(std, "_prepare_current_deals", lambda: pd.DataFrame(_base_rows()).assign(
+        Valid_From="2026-09-17", Valid_Until="2026-09-23", ai_confidence="claude_code"))
+    text = std.build_digest(limit=5, min_score=50)
+    assert "https://x.test/" in text
+    assert "every deal" in text.lower() or "full list" in text.lower()

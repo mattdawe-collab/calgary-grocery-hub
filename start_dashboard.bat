@@ -1,56 +1,73 @@
 @echo off
+setlocal
 title Calgary Grocery Hub - Dashboard
 
+cd /d "%~dp0"
+set "PROJECT_DIR=%CD%"
+set "API_PORT=8000"
+if not "%~1"=="" set "API_PORT=%~1"
+
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
+
 echo ============================================
-echo   Calgary Grocery Hub - Starting Dashboard
+echo   Calgary Grocery Hub - Dashboard
 echo ============================================
 echo.
 
-:: Check Python is available
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: Python not found in PATH!
-    echo Please install Python or check your PATH settings.
+    echo ERROR: Python was not found in PATH.
     pause
     exit /b 1
 )
 
-:: Start FastAPI backend (serves both API + React production build)
-echo Starting server on port 8000...
-start "API Server" cmd /k "cd /d \"\\NASD66196\Python Projects\Weekly Deals\" && python -m uvicorn api.main:app --host 0.0.0.0 --port 8000"
+if not exist "%PROJECT_DIR%\dashboard\dist\index.html" (
+    echo React production build is missing. Building dashboard...
+    where npm >nul 2>&1
+    if errorlevel 1 (
+        echo ERROR: npm was not found in PATH. Install Node.js, then run:
+        echo   cd /d "%PROJECT_DIR%\dashboard"
+        echo   npm install
+        echo   npm run build
+        pause
+        exit /b 1
+    )
+    pushd "%PROJECT_DIR%\dashboard"
+    if not exist node_modules (
+        npm install
+        if errorlevel 1 (
+            popd
+            echo ERROR: npm install failed.
+            pause
+            exit /b 1
+        )
+    )
+    npm run build
+    if errorlevel 1 (
+        popd
+        echo ERROR: dashboard build failed.
+        pause
+        exit /b 1
+    )
+    popd
+)
 
-:: Give the API a moment to start
+echo Starting FastAPI server on port %API_PORT%...
+start "Calgary Grocery Hub API" /D "%PROJECT_DIR%" cmd /k "set PYTHONUTF8=1&& set PYTHONIOENCODING=utf-8&& python -m uvicorn api.main:app --host 0.0.0.0 --port %API_PORT%"
+
 timeout /t 3 /nobreak >nul
 
-:: Check if the server is actually running
-netstat -an | findstr ":8000" >nul 2>&1
-if errorlevel 1 (
-    echo WARNING: Server may not have started. Check the "API Server" window for errors.
-    echo.
-)
-
 echo.
-echo   Local:  http://localhost:8000
+echo Local dashboard:
+echo   http://localhost:%API_PORT%
 echo.
-
-:: Ask if user wants to expose externally
-set /p TUNNEL="Expose externally via ngrok? (y/n): "
-if /i "%TUNNEL%"=="y" (
-    echo Starting ngrok tunnel...
-    start "ngrok Tunnel" cmd /k "ngrok http --url paris-prevertebral-unsusceptibly.ngrok-free.dev 8000"
-    timeout /t 5 /nobreak >nul
-    echo.
-    echo   Public: https://paris-prevertebral-unsusceptibly.ngrok-free.dev
-)
-
+echo API:
+echo   http://localhost:%API_PORT%/api/insights
 echo.
-echo ============================================
-echo   Dashboard is running!
-echo   Press any key to stop all services...
-echo ============================================
+echo Press any key in this window to stop the API server.
 pause >nul
 
-:: Kill all services
-taskkill /fi "windowtitle eq API Server*" /f >nul 2>&1
-taskkill /fi "windowtitle eq ngrok Tunnel*" /f >nul 2>&1
-echo Servers stopped.
+taskkill /fi "windowtitle eq Calgary Grocery Hub API*" /f >nul 2>&1
+echo Server stopped.
+endlocal

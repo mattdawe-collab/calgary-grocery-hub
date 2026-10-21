@@ -35,6 +35,10 @@ from data_quality import (
     add_quality_metadata,
     filter_grocery_relevant,
     sanitize_unit_prices,
+    parse_dates,
+    add_price_basis,
+    basis_is_comparable,
+    brand_aware_name,
 )
 from deal_guidance import add_deal_guidance
 
@@ -685,6 +689,17 @@ def _find_historical_matches(item_row, df_history, has_norm_col=False):
     if df_history is None or len(df_history) == 0:
         return pd.DataFrame()
 
+    # Only ever compare like with like. A $2.19/lb turkey averaged against a
+    # $35 whole bird is what produced "85% below average" on a normal price.
+    item_basis = item_row.get('basis') if hasattr(item_row, 'get') else None
+    if item_basis and 'basis' in df_history.columns:
+        df_history = df_history[
+            df_history['basis'].map(lambda b: basis_is_comparable(b, item_basis))
+        ]
+        if len(df_history) == 0:
+            # Preserve the schema: callers read ['Price_Value'] off the result.
+            return df_history.iloc[0:0]
+
     # --- Tier 1: Exact ai_normalized_name match ---
     hist_has_norm = 'ai_normalized_name' in df_history.columns
     if has_norm_col and hist_has_norm:
@@ -736,7 +751,7 @@ def load_historical_data():
     """Load historical price archive."""
     if os.path.exists(HISTORICAL_ARCHIVE):
         df = pd.read_csv(HISTORICAL_ARCHIVE, low_memory=False)
-        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        df['Date'] = parse_dates(df['Date'])
         return df
     return pd.DataFrame()
 
@@ -755,10 +770,16 @@ def compute_historical_stats(df, df_history, lookback_days=180):
         df['price_percentile'] = None
         df['is_lowest_historical'] = False
         df['pct_below_avg'] = None
+        df['history_unit'] = ''
         return df
 
     cutoff = pd.Timestamp.now() - timedelta(days=lookback_days)
     recent_history = df_history[df_history['Date'] >= cutoff].copy()
+
+    # Resolve how each price is quoted so unlike bases never share an average.
+    if 'basis' not in df.columns:
+        df = add_price_basis(df)
+    recent_history = add_price_basis(recent_history)
 
     has_norm_col = 'ai_normalized_name' in df.columns
     hist_has_unit_price = 'unit_price' in recent_history.columns
@@ -810,7 +831,11 @@ def compute_historical_stats(df, df_history, lookback_days=180):
                 'historical_count': len(prices),
                 'price_percentile': round(percentile, 1),
                 'is_lowest_historical': current_price <= min_p,
-                'pct_below_avg': round(pct_below, 1)
+                'pct_below_avg': round(pct_below, 1),
+                # Which unit the average is in. When the comparison ran on
+                # unit prices, historical_avg is per kg while Price_Value is a
+                # package price, so the display has to say so.
+                'history_unit': current_unit_type if use_unit_price else ''
             })
         else:
             stats.append({
@@ -820,7 +845,8 @@ def compute_historical_stats(df, df_history, lookback_days=180):
                 'historical_count': 0,
                 'price_percentile': None,
                 'is_lowest_historical': False,
-                'pct_below_avg': None
+                'pct_below_avg': None,
+                'history_unit': ''
             })
 
     stats_df = pd.DataFrame(stats)
@@ -980,6 +1006,8 @@ def save_to_archive(df_current, df_archive):
         'Valid_From', 'Valid_Until',
         'price_basis', 'unit_price', 'unit_type'
     ]
+    if 'Brand' in df_new.columns:
+        archive_cols.append('Brand')
     if 'ai_category' in df_new.columns:
         archive_cols.append('ai_category')
     if 'ai_normalized_name' in df_new.columns:
@@ -1064,6 +1092,12 @@ def scrape_deals():
             if not name:
                 continue
 
+            # Flipp sends brand separately; without it every store's generic
+            # "Frozen Turkey" collapses into one shared price history.
+            brand = str(item.get('brand', '') or '').strip()
+            name = brand_aware_name(name, brand)
+            image_url = str(item.get('cutout_image_url', '') or '').strip()
+
             # v3.0: Robust price parsing with price_basis
             price_val, price_txt, price_basis = extract_price_data(item)
 
@@ -1078,6 +1112,8 @@ def scrape_deals():
             all_items.append({
                 'Store': store,
                 'Item': name,
+                'Brand': brand,
+                'Image_URL': image_url,
                 'Price_Value': price_val,
                 'Price_Text': price_txt,
                 'price_basis': price_basis,
@@ -1146,6 +1182,13 @@ def scrape_deals():
 
     if len(df_history) > 0:
         print(f"   📚 Loaded {len(df_history):,} historical records")
+        try:
+            from tools.repair_archive import archive_health
+            health = archive_health(df_history)
+            if not health["ok"]:
+                print(f"   ⚠️ ARCHIVE: {health['message']}")
+        except ImportError:
+            pass
         # v3.1: Clean per-100g entries in archive
         df_history = clean_archive_per_100g(df_history)
     else:
@@ -1157,7 +1200,7 @@ def scrape_deals():
 
     if AI_ANALYZER_AVAILABLE and add_ai_analysis_to_dataframe:
         try:
-            df = add_ai_analysis_to_dataframe(df, df_history, batch_size=25)
+            df = add_ai_analysis_to_dataframe(df, df_history, batch_size=40)
         except Exception as e:
             print(f"   ⚠️ AI analysis failed: {e}")
     else:

@@ -1,8 +1,13 @@
 """
-Calgary Grocery Hub - AI Quality Analyzer v4.0
-Uses Claude Haiku for HIGH SPEED deal analysis
+Calgary Grocery Hub - AI Quality Analyzer v5.0
+Categorization + normalization via the local Claude Code CLI (subscription).
 
 Updates:
+- v5.0: Backend moved to Claude Code CLI (`claude -p`), see ai_backends.py
+    * Gemini 2.5 thinking tokens truncated every batch Jun-Sep 2026; fixed
+      config kept as an opt-in paid fallback
+    * Name-keyed cache reuses earlier classifications (no LLM call)
+    * Results matched by item name; parallel batches (AI_WORKERS)
 - v4.0: Migrated from Gemini to Claude (Anthropic) API
     * Uses anthropic SDK with claude-haiku-4-5-20251001
     * Structured JSON output via system prompt
@@ -25,7 +30,18 @@ import time
 import random
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
-from data_quality import repair_category
+from data_quality import parse_dates, repair_category
+from ai_backends import (
+    ClaudeCLIError,
+    anthropic_model,
+    anthropic_request_kwargs,
+    response_text,
+    is_backend_unusable,
+    claude_cli_model,
+    extract_json_array,
+    run_claude_cli,
+    select_backend,
+)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -147,7 +163,7 @@ def get_historical_context(item_name, df_history, lookback_days=180):
     # Ensure Date column is datetime
     if 'Date' in df_history.columns and not pd.api.types.is_datetime64_any_dtype(df_history['Date']):
         df_history = df_history.copy()
-        df_history['Date'] = pd.to_datetime(df_history['Date'], errors='coerce')
+        df_history['Date'] = parse_dates(df_history['Date'])
 
     cutoff = pd.Timestamp.now() - timedelta(days=lookback_days)
 
@@ -397,12 +413,24 @@ Return ONLY a valid JSON array, no other text."""
 
 
 def _parse_ai_response(text):
-    """Parse and clean AI response text into JSON."""
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r'^```json?\n?', '', text)
-        text = re.sub(r'\n?```$', '', text)
-    return json.loads(text)
+    """Parse a model reply into a list, tolerating fences/prose. Raises ValueError if truncated."""
+    return extract_json_array(text)
+
+
+def _gemini_scoring_config():
+    """Gemini generation config for scoring.
+
+    gemini-2.5-flash is a "thinking" model: its reasoning tokens are charged
+    against max_output_tokens. With the old 4096 cap the JSON was cut off after
+    ~450 characters on every batch (Jun-Sep 2026). Disable thinking for this
+    mechanical task, force JSON output, and give it room.
+    """
+    return {
+        "max_output_tokens": 16384,
+        "temperature": 0.15,
+        "response_mime_type": "application/json",
+        "thinking_config": {"thinking_budget": 0},
+    }
 
 
 def _is_non_retryable_api_error(error):
@@ -415,48 +443,83 @@ def _is_non_retryable_api_error(error):
         "no longer available",
         "invalid_argument",
         "permission_denied",
+        "spending cap",
+        "spend cap",
         "model",
     ]
     transient_markers = ["429", "rate", "503", "unavailable", "timeout", "deadline"]
+    if "spending cap" in text or "spend cap" in text:
+        return True
     return any(m in text for m in permanent_markers) and not any(m in text for m in transient_markers)
 
 
 def call_ai_api(batch_data, taxonomy_str, ai_client):
     """
-    Call AI API (Gemini default, Claude fallback) with retry logic.
-    ai_client is a dict with 'type' and 'client' keys.
+    Call the configured AI backend with retry logic and return a list of
+    per-item dicts, or None on failure (caller falls back to statistics).
+
+    ai_client is a dict with 'type' ('claude_code' | 'gemini' | 'anthropic')
+    and, for API backends, a 'client' object.
     """
 
     prompt = _build_analysis_prompt(batch_data, taxonomy_str)
     system_msg = "You are a grocery deal analyst for Calgary, Canada. Respond with ONLY a valid JSON array. No markdown fences, no explanatory text."
+    backend = ai_client['type']
 
-    max_retries = 5
+    max_retries = 3 if backend == 'claude_code' else 5
     base_delay = 1
 
     for attempt in range(max_retries):
         try:
-            if ai_client['type'] == 'gemini':
+            if backend == 'claude_code':
+                text = run_claude_cli(f"{system_msg}\n\n{prompt}", model=claude_cli_model("scoring"))
+                return _parse_ai_response(text)
+            elif backend == 'gemini':
                 response = ai_client['client'].models.generate_content(
                     model=GEMINI_MODEL,
                     contents=f"{system_msg}\n\n{prompt}",
-                    config=genai.types.GenerateContentConfig(
-                        max_output_tokens=4096,
-                        temperature=0.15,
-                    )
+                    config=genai.types.GenerateContentConfig(**_gemini_scoring_config()),
                 )
                 return _parse_ai_response(response.text)
             else:
-                response = ai_client['client'].messages.create(
-                    model=CLAUDE_MODEL,
-                    max_tokens=4096,
-                    temperature=0.15,
+                # No temperature: current models reject sampling parameters
+                # ("`temperature` is deprecated for this model", 400).
+                response = ai_client['client'].messages.create(**anthropic_request_kwargs(
+                    model=anthropic_model("scoring"),
                     system=system_msg,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                return _parse_ai_response(response.content[0].text)
+                    prompt=prompt,
+                    max_tokens=16384,
+                    effort=os.getenv("ANTHROPIC_SCORING_EFFORT", "low"),
+                ))
+                return _parse_ai_response(response_text(response))
 
+        except (json.JSONDecodeError, ValueError) as e:
+            # Truncated or malformed output. Retry once (models are non-deterministic),
+            # then fall back so the run keeps moving.
+            if attempt < 1:
+                print(f"      ⚠️ AI returned invalid JSON ({e}); retrying once...")
+                continue
+            print(f"      ❌ AI returned invalid JSON, using statistical fallback: {e}")
+            return None
+        except ClaudeCLIError as e:
+            msg = str(e)
+            if "authenticate" in msg.lower() or "logged in" in msg.lower():
+                print(f"      ❌ Claude CLI auth failure, not retrying: {msg}")
+                return None
+            if attempt < max_retries - 1:
+                print(f"      ⚠️ Claude CLI error: {msg}. Retrying...")
+                time.sleep(base_delay * (2 ** attempt))
+            else:
+                print(f"      ❌ Claude CLI failed after {max_retries} attempts: {msg}")
+                return None
         except Exception as e:
             err_name = type(e).__name__
+            if is_backend_unusable(e):
+                # No credits, bad key, no permission: every retry fails the
+                # same way, and 35 batches x 5 retries is a long way to learn
+                # nothing. Fall back now.
+                print(f"      \u274c Backend unavailable, not retrying: {e}")
+                return None
             if _is_non_retryable_api_error(e):
                 print(f"      ❌ API permanent error, not retrying: {e}")
                 return None
@@ -474,201 +537,276 @@ def call_ai_api(batch_data, taxonomy_str, ai_client):
             else:
                 print(f"      ❌ API Failed after {max_retries} attempts: {e}")
                 return None
+    return None
+
+
+# =============================================================================
+# NAME-KEYED CATEGORIZATION CACHE
+# =============================================================================
+
+def _norm_key(value):
+    return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+
+def build_name_cache(df_history):
+    """
+    Map normalized item name -> {category, subcategory, normalized_name} from
+    archive rows that carry genuine AI output.
+
+    Statistical-fallback rows are recognisable (normalized_name == Item and
+    subcategory == 'General') and are excluded, so garbage from the
+    Jun-Sep 2026 outage never gets cached. Newest row per name wins.
+    """
+    if df_history is None or len(df_history) == 0:
+        return {}
+    needed = {'Item', 'ai_normalized_name', 'ai_category', 'ai_sub_category'}
+    if not needed.issubset(df_history.columns):
+        return {}
+
+    h = df_history[list(needed) + (['Date'] if 'Date' in df_history.columns else [])].copy()
+    h = h.dropna(subset=['ai_normalized_name', 'ai_category'])
+    item_key = h['Item'].map(_norm_key)
+    norm_key = h['ai_normalized_name'].map(_norm_key)
+    sub = h['ai_sub_category'].astype(str).str.strip()
+    cat = h['ai_category'].astype(str).str.strip()
+    trusted = (norm_key != item_key) & (norm_key != '') & (sub != '') & (sub != 'General') & (cat != '') & (cat != 'Other')
+    h = h[trusted]
+    if h.empty:
+        return {}
+    if 'Date' in h.columns:
+        h = h.assign(_d=parse_dates(h['Date'])).sort_values('_d')
+    cache = {}
+    for _, row in h.iterrows():
+        cache[_norm_key(row['Item'])] = {
+            'category': str(row['ai_category']).strip(),
+            'subcategory': str(row['ai_sub_category']).strip(),
+            'normalized_name': str(row['ai_normalized_name']).strip(),
+        }
+    return cache
+
+
+# =============================================================================
+# MAIN ENTRY POINT
+# =============================================================================
+
+def _make_ai_client(backend_type):
+    """Instantiate an API client for the chosen backend; None means statistical."""
+    if backend_type == 'claude_code':
+        print(f"   🤖 Using Claude Code CLI: {claude_cli_model('scoring')}")
+        return {'type': 'claude_code'}
+    if backend_type == 'gemini' and GEMINI_AVAILABLE:
+        try:
+            client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+            print(f"   🤖 Using Gemini: {GEMINI_MODEL}")
+            return {'type': 'gemini', 'client': client}
+        except Exception as e:
+            print(f"   ⚠️ Failed to configure Gemini: {e}")
+    if backend_type == 'anthropic' and CLAUDE_AVAILABLE:
+        try:
+            client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+            print(f"   🤖 Using Claude API: {anthropic_model('scoring')}")
+            return {'type': 'anthropic', 'client': client}
+        except Exception as e:
+            print(f"   ⚠️ Failed to configure Claude API: {e}")
+    return None
+
+
+def _apply_ai_result(df_current, idx, ai_result, source):
+    df_current.at[idx, 'ai_category'] = ai_result.get('category', 'Other')
+    df_current.at[idx, 'ai_sub_category'] = ai_result.get('subcategory', 'General')
+    df_current.at[idx, 'ai_normalized_name'] = ai_result.get('normalized_name', '')
+    df_current.at[idx, 'ai_deal_score'] = ai_result.get('score', 50)
+    df_current.at[idx, 'ai_deal_rating'] = ai_result.get('rating', '😐 Fair')
+    df_current.at[idx, 'ai_explanation'] = ai_result.get('explanation', '')
+    df_current.at[idx, 'ai_confidence'] = source
+
+
+def _apply_statistical(df_current, idx, ctx, source='statistical', cached=None):
+    row = df_current.loc[idx]
+    hist = ctx.get('historical')
+    cross = ctx.get('cross_store')
+    score = compute_statistical_score(row['Price_Value'], hist, cross)
+    df_current.at[idx, 'ai_deal_score'] = score
+    df_current.at[idx, 'ai_deal_rating'] = get_rating_from_score(score)
+    df_current.at[idx, 'ai_explanation'] = generate_statistical_explanation(row['Price_Value'], hist, cross)
+    if cached:
+        df_current.at[idx, 'ai_category'] = cached['category']
+        df_current.at[idx, 'ai_sub_category'] = cached['subcategory']
+        df_current.at[idx, 'ai_normalized_name'] = cached['normalized_name']
+    else:
+        df_current.at[idx, 'ai_category'] = categorize_by_keywords(row['Item'])
+        df_current.at[idx, 'ai_sub_category'] = 'General'
+        df_current.at[idx, 'ai_normalized_name'] = row['Item']
+    df_current.at[idx, 'ai_confidence'] = source
+
+
+def _build_batch_payload(df_current, batch_indices, context_cache):
+    batch_data = []
+    for idx in batch_indices:
+        row = df_current.loc[idx]
+        ctx = context_cache.get(idx, {})
+        hist = ctx.get('historical')
+        cross = ctx.get('cross_store')
+        item_data = {'item': row['Item'], 'price': row['Price_Value'], 'store': row['Store']}
+        if pd.notna(row.get('price_basis')):
+            item_data['price_basis'] = row['price_basis']
+        if pd.notna(row.get('unit_price')):
+            item_data['unit_price'] = row['unit_price']
+            item_data['unit_type'] = row.get('unit_type', '')
+        if hist:
+            item_data['history'] = hist
+        if cross:
+            item_data['cross_store'] = {
+                'best_price': cross['best_price'],
+                'best_store': cross['best_store'],
+                'num_stores': len(cross['stores']),
+            }
+        batch_data.append(item_data)
+    return batch_data
+
+
+def _match_results(batch_indices, batch_data, ai_results):
+    """
+    Pair AI results with dataframe rows by item name (models reorder and
+    occasionally drop items). Returns {idx: result}. Unmatched rows are absent.
+    """
+    if not ai_results:
+        return {}
+    by_name = {}
+    for res in ai_results:
+        if isinstance(res, dict):
+            by_name.setdefault(_norm_key(res.get('item')), []).append(res)
+    matched = {}
+    for idx, data in zip(batch_indices, batch_data):
+        bucket = by_name.get(_norm_key(data['item']))
+        if bucket:
+            matched[idx] = bucket.pop(0)
+    # Positional fallback only when names failed entirely but counts line up.
+    if not matched and len(ai_results) == len(batch_indices) and all(isinstance(r, dict) for r in ai_results):
+        matched = dict(zip(batch_indices, ai_results))
+    return matched
 
 
 def add_ai_analysis_to_dataframe(df_current, df_history=None, batch_size=25):
     """
-    Add AI-powered analysis to the deals dataframe using Claude.
-    Falls back to statistical scoring if no API key is available.
+    Add AI-powered categorization/normalization to the deals dataframe.
 
-    v4.0: Migrated from Gemini to Claude (Anthropic).
-    v3.0: Includes price_basis and unit_price in context sent to AI.
-          AI is now focused on categorization + normalization.
-          Scoring follows a constrained rubric.
+    Backend order (see ai_backends.select_backend): Claude Code CLI (subscription)
+    -> paid API only if AI_ALLOW_PAID_FALLBACK=1 -> statistical.
+    Items whose exact name was classified in an earlier run reuse that
+    classification without an LLM call.
     """
-    load_dotenv(override=True)
+    load_dotenv(dotenv_path, override=True)
 
-    # Initialize columns (v4.1: trimmed dead columns)
     ai_columns = [
         'ai_deal_score', 'ai_deal_rating', 'ai_explanation',
         'ai_normalized_name', 'ai_category', 'ai_sub_category',
         'ai_confidence'
     ]
-
     for col in ai_columns:
         if col not in df_current.columns:
-            if col == 'ai_deal_score':
-                df_current[col] = 0.0
-            else:
-                df_current[col] = ''
+            df_current[col] = 0.0 if col == 'ai_deal_score' else ''
 
     if df_current.empty:
         return df_current
 
-    # Set up AI client: Gemini (default) → Claude (fallback)
-    ai_client = None
-
-    GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-    if GEMINI_KEY and GEMINI_AVAILABLE:
-        try:
-            ai_client = {'type': 'gemini', 'client': genai.Client(api_key=GEMINI_KEY)}
-            print(f"   🤖 Using Gemini: {GEMINI_MODEL}")
-        except Exception as e:
-            print(f"   ⚠️ Failed to configure Gemini: {e}")
-
-    if not ai_client:
-        ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY")
-        if ANTHROPIC_KEY and CLAUDE_AVAILABLE:
-            try:
-                ai_client = {'type': 'claude', 'client': anthropic.Anthropic(api_key=ANTHROPIC_KEY)}
-                print(f"   🤖 Using Claude: {CLAUDE_MODEL}")
-            except Exception as e:
-                print(f"   ⚠️ Failed to configure Claude: {e}")
-
+    backend = select_backend(verbose=True)
+    ai_client = _make_ai_client(backend['type'])
     use_ai = ai_client is not None
     if not use_ai:
-        print(f"   📊 No AI API key found - using statistical scoring only")
+        print("   📊 No usable AI backend - using statistical scoring only")
 
-    # Convert history dates if needed
     if df_history is not None and len(df_history) > 0 and 'Date' in df_history.columns:
         if not pd.api.types.is_datetime64_any_dtype(df_history['Date']):
             df_history = df_history.copy()
-            df_history['Date'] = pd.to_datetime(df_history['Date'], errors='coerce')
+            df_history['Date'] = parse_dates(df_history['Date'])
 
-    # Filter for items that need analysis
     items_to_score = df_current[
         (df_current['ai_deal_score'].isnull()) |
         (df_current['ai_deal_score'] == 0) |
         (df_current['ai_deal_score'] == 0.0)
     ]
-
     if items_to_score.empty:
-        print(f"   ✅ All items already scored")
+        print("   ✅ All items already scored")
         return df_current
 
     print(f"   📝 Scoring {len(items_to_score)} items...")
 
-    # Pre-compute context for all items
     context_cache = {}
     for idx, row in items_to_score.iterrows():
-        item_name = row['Item']
-        hist_ctx = get_historical_context(item_name, df_history) if df_history is not None else None
-        cross_ctx = get_cross_store_context(item_name, df_current)
+        hist_ctx = get_historical_context(row['Item'], df_history) if df_history is not None else None
+        cross_ctx = get_cross_store_context(row['Item'], df_current)
         context_cache[idx] = {'historical': hist_ctx, 'cross_store': cross_ctx}
 
-    # Process in batches
-    taxonomy_str = json.dumps(TAXONOMY, indent=2)
-    total_batches = (len(items_to_score) + batch_size - 1) // batch_size
-
-    for batch_num, i in enumerate(range(0, len(items_to_score), batch_size)):
-        batch = items_to_score.iloc[i:i+batch_size]
-
-        print(f"   📦 Batch {batch_num+1}/{total_batches} ({len(batch)} items)...", end=" ")
-
-        # Build batch data with context
-        batch_data = []
-        batch_indices = []
-
-        for idx, row in batch.iterrows():
-            ctx = context_cache.get(idx, {})
-            hist = ctx.get('historical')
-            cross = ctx.get('cross_store')
-
-            item_data = {
-                'item': row['Item'],
-                'price': row['Price_Value'],
-                'store': row['Store'],
-            }
-
-            # v3.0: Include price_basis and unit_price
-            if pd.notna(row.get('price_basis')):
-                item_data['price_basis'] = row['price_basis']
-            if pd.notna(row.get('unit_price')):
-                item_data['unit_price'] = row['unit_price']
-                item_data['unit_type'] = row.get('unit_type', '')
-
-            if hist:
-                item_data['history'] = hist
-            if cross:
-                item_data['cross_store'] = {
-                    'best_price': cross['best_price'],
-                    'best_store': cross['best_store'],
-                    'num_stores': len(cross['stores'])
-                }
-
-            batch_data.append(item_data)
-            batch_indices.append(idx)
-
-        # Try AI API if available
-        ai_results = None
-        if use_ai and ai_client:
-            ai_results = call_ai_api(batch_data, taxonomy_str, ai_client)
-
-        # Process results
-        if ai_results and len(ai_results) == len(batch_indices):
-            print("✅")
-            for idx, ai_result in zip(batch_indices, ai_results):
-                df_current.at[idx, 'ai_category'] = ai_result.get('category', 'Other')
-                df_current.at[idx, 'ai_sub_category'] = ai_result.get('subcategory', 'General')
-                df_current.at[idx, 'ai_normalized_name'] = ai_result.get('normalized_name', '')
-                df_current.at[idx, 'ai_deal_score'] = ai_result.get('score', 50)
-                df_current.at[idx, 'ai_deal_rating'] = ai_result.get('rating', '😐 Fair')
-                df_current.at[idx, 'ai_explanation'] = ai_result.get('explanation', '')
-                df_current.at[idx, 'ai_confidence'] = ai_client['type']
+    # --- Cache pass: reuse prior classifications for identical item names ---
+    name_cache = build_name_cache(df_history) if (use_ai and os.getenv("AI_NAME_CACHE", "1") != "0") else {}
+    cached_hits = 0
+    llm_indices = []
+    for idx in items_to_score.index:
+        cached = name_cache.get(_norm_key(df_current.at[idx, 'Item']))
+        if cached:
+            _apply_statistical(df_current, idx, context_cache[idx], source='cached', cached=cached)
+            cached_hits += 1
         else:
-            # Fallback to statistical scoring
-            if use_ai:
-                print("⚠️ Using statistical fallback")
+            llm_indices.append(idx)
+    if name_cache:
+        print(f"   💾 Name cache: {cached_hits} items reused prior classification, {len(llm_indices)} need the model")
+
+    if not use_ai:
+        for idx in llm_indices:
+            _apply_statistical(df_current, idx, context_cache[idx])
+        llm_indices = []
+
+    # --- Model pass ---
+    batch_size = int(os.getenv("AI_BATCH_SIZE", batch_size))
+    taxonomy_str = json.dumps(TAXONOMY, indent=2)
+    batches = [llm_indices[i:i + batch_size] for i in range(0, len(llm_indices), batch_size)]
+    total_batches = len(batches)
+    workers = int(os.getenv("AI_WORKERS", "3" if backend['type'] == 'claude_code' else "1"))
+    workers = max(1, min(workers, total_batches or 1))
+
+    def run_batch(batch_num, batch_indices):
+        batch_data = _build_batch_payload(df_current, batch_indices, context_cache)
+        results = call_ai_api(batch_data, taxonomy_str, ai_client) if use_ai else None
+        return batch_num, batch_indices, batch_data, results
+
+    def consume(batch_num, batch_indices, batch_data, results):
+        matched = _match_results(batch_indices, batch_data, results)
+        for idx in batch_indices:
+            if idx in matched:
+                _apply_ai_result(df_current, idx, matched[idx], ai_client['type'])
             else:
-                print("📊 Statistical scoring")
+                _apply_statistical(df_current, idx, context_cache[idx])
+        missing = len(batch_indices) - len(matched)
+        status = "✅" if not missing else ("⚠️ Using statistical fallback" if not matched else f"⚠️ {missing} item(s) missing, statistical for those")
+        print(f"   📦 Batch {batch_num}/{total_batches} ({len(batch_indices)} items)... {status}")
 
-            for idx in batch_indices:
-                row = df_current.loc[idx]
-                ctx = context_cache.get(idx, {})
-                hist = ctx.get('historical')
-                cross = ctx.get('cross_store')
+    if workers > 1 and total_batches > 1:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(run_batch, n + 1, b) for n, b in enumerate(batches)]
+            for fut in as_completed(futures):
+                consume(*fut.result())
+    else:
+        for n, b in enumerate(batches):
+            consume(*run_batch(n + 1, b))
 
-                # Compute statistical score (v3.0 aligned formula)
-                score = compute_statistical_score(row['Price_Value'], hist, cross)
-                explanation = generate_statistical_explanation(row['Price_Value'], hist, cross)
-                rating = get_rating_from_score(score)
-                category = categorize_by_keywords(row['Item'])
+    # Surface AI vs fallback split so silent degradation is visible.
+    total = len(df_current)
+    conf = df_current['ai_confidence']
+    fb = int((conf == 'statistical').sum())
+    ai_n = int(conf.isin(['claude_code', 'gemini', 'anthropic', 'claude']).sum())
+    cached_n = int((conf == 'cached').sum())
+    pct = fb / total * 100 if total else 0
+    print(f"   📊 Classification sources: model {ai_n:,} | cached {cached_n:,} | statistical {fb:,} ({pct:.1f}%)")
+    if use_ai and pct > 10:
+        print(f"   ⚠️ ALERT: high statistical-fallback rate ({pct:.1f}%) - check the AI backend / login")
 
-                df_current.at[idx, 'ai_category'] = category
-                df_current.at[idx, 'ai_sub_category'] = 'General'
-                df_current.at[idx, 'ai_normalized_name'] = row['Item']
-                df_current.at[idx, 'ai_deal_score'] = score
-                df_current.at[idx, 'ai_deal_rating'] = rating
-                df_current.at[idx, 'ai_explanation'] = explanation
-                df_current.at[idx, 'ai_confidence'] = 'statistical'
-
-    # v3.2: Surface AI vs fallback split so silent rate-limit degradation
-    # is visible. > 10% on statistical fallback usually means the API key
-    # ran out of quota or the model is rate-limited; cross-store stats
-    # downstream become unreliable when ai_normalized_name is the raw item.
-    if 'ai_confidence' in df_current.columns:
-        total = len(df_current)
-        fb = (df_current['ai_confidence'] == 'statistical').sum()
-        if total > 0:
-            pct = fb / total * 100
-            print(f"   📊 AI fallback rate: {fb:,}/{total:,} ({pct:.1f}%) on statistical scoring")
-            if pct > 10:
-                print(f"   ⚠️ ALERT: high statistical-fallback rate ({pct:.1f}%) - check API quota / rate limits")
-
-    print(f"   ✅ Scoring complete")
+    print("   ✅ Scoring complete")
     return df_current
-
 
 if __name__ == "__main__":
     # Test with sample data
-    print("AI Quality Analyzer v4.0 - Claude Edition")
-    print(f"Claude Model: {CLAUDE_MODEL}  |  Gemini Model: {GEMINI_MODEL}")
-    print(f"Claude Available: {CLAUDE_AVAILABLE}")
-
-    # Check for API key
-    load_dotenv()
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if api_key:
-        print(f"✓ API key found")
-    else:
-        print("⚠️ No ANTHROPIC_API_KEY in environment")
+    print("AI Quality Analyzer v5.0 - Claude Code CLI Edition")
+    print(f"Scoring model: {claude_cli_model('scoring')}  |  Gemini: {GEMINI_MODEL}  |  Claude API: {CLAUDE_MODEL}")
+    print(f"Backend: {select_backend()}")
